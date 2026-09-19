@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 
-from sqlalchemy import ColumnElement, exists, func, or_, select
+from sqlalchemy import ColumnElement, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -193,3 +193,42 @@ async def update_todo(db: AsyncSession, todo: Todo, update_data: dict) -> Todo:
 async def delete_todo(db: AsyncSession, todo: Todo) -> None:
     await db.delete(todo)
     await db.flush()
+
+
+async def bulk_set_completed(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    todo_ids: set[uuid.UUID],
+    completed: bool,
+) -> bool:
+    """Set completed on every todo in todo_ids, or on none of them.
+
+    Returns False, having written nothing, unless every id is a todo owned by
+    user_id; a missing id and another user's id are not told apart.
+
+    The ownership check is one SELECT, not one per id, and it locks the rows
+    it finds (FOR UPDATE; SQLite ignores it) so none can be deleted or change
+    owner between the check and the write. The write is then a single UPDATE
+    in the same transaction, still scoped by user_id; its row count is checked
+    as well, and a mismatch rolls the whole thing back.
+    """
+    owned = await db.scalars(
+        select(Todo.id)
+        .where(Todo.user_id == user_id, Todo.id.in_(todo_ids))
+        .with_for_update()
+    )
+    if set(owned) != todo_ids:
+        return False
+
+    result = await db.execute(
+        update(Todo)
+        .where(Todo.user_id == user_id, Todo.id.in_(todo_ids))
+        .values(completed=completed)
+        # Nothing in the session holds these todos, so there is nothing to
+        # synchronize; updated_at is still set by the column's onupdate.
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != len(todo_ids):
+        await db.rollback()
+        return False
+    return True

@@ -9,12 +9,20 @@ from app.core.redis import RedisClient
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.tag import TodoTagAttach
-from app.schemas.todo import TodoCreate, TodoListResponse, TodoResponse, TodoUpdate
+from app.schemas.todo import (
+    TodoBulkStatusResponse,
+    TodoBulkStatusUpdate,
+    TodoCreate,
+    TodoListResponse,
+    TodoResponse,
+    TodoUpdate,
+)
 from app.services.tag_service import attach_tag, detach_tag, get_tag_by_id
 from app.services.todo_cache import invalidate_todo_list_cache, todo_list_cache_key
 from app.services.todo_service import (
     TodoFilters,
     TodoStatus,
+    bulk_set_completed,
     create_todo,
     delete_todo,
     get_todo_by_id,
@@ -133,6 +141,31 @@ async def create_new_todo(
     todo = await create_todo(db, todo_data, current_user.id)
     await invalidate_todo_list_cache(redis, current_user.id)
     return todo
+
+
+# Declared before the /{todo_id} routes so that "bulk-status" can never be
+# read as a todo id, should a PATCH /{todo_id} be added later.
+@router.patch("/bulk-status", response_model=TodoBulkStatusResponse)
+async def bulk_update_status(
+    body: TodoBulkStatusUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
+):
+    """Mark several todos completed or active, all or none.
+
+    404 if any id is not one of the caller's todos, and then nothing changes.
+    A repeated id is applied once.
+    """
+    todo_ids = set(body.todo_ids)
+    if not await bulk_set_completed(db, current_user.id, todo_ids, body.completed):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Todo not found",
+        )
+
+    await invalidate_todo_list_cache(redis, current_user.id)
+    return TodoBulkStatusResponse(updated=len(todo_ids))
 
 
 @router.get("/{todo_id}", response_model=TodoResponse)

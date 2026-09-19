@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 from app.schemas.tag import TagSummary
 
@@ -15,6 +15,23 @@ class TodoUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=200)
     description: str | None = None
     completed: bool | None = None
+
+
+# Same ceiling as the list's page_size: bulk actions apply to a selection made
+# on one page of the list, so a request never needs more ids than a page holds.
+MAX_BULK_TODO_IDS = 100
+
+
+class TodoBulkStatusUpdate(BaseModel):
+    todo_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=MAX_BULK_TODO_IDS)
+    # StrictBool: plain bool would also take "yes", "1" or 0, and a bulk write
+    # is the wrong place to guess what a malformed value meant.
+    completed: StrictBool
+
+
+class TodoBulkStatusResponse(BaseModel):
+    # Distinct todos changed; duplicates in the request are counted once.
+    updated: int
 
 
 class TodoResponse(BaseModel):
