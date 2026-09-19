@@ -1,0 +1,21 @@
+# Keeps local artifacts out of the build context, and so out of the image.
+# `COPY . .` in the Dockerfile otherwise copies whatever is lying around.
+
+# Python caches and virtualenvs
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Test artifacts. tests/ itself is kept: the suite is run inside the
+# container (`docker compose exec backend pytest tests/`).
+test.db
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Local environment files; configuration reaches the container through
+# docker-compose, never through the image.
+.env
+.env.*
