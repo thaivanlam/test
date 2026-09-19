@@ -541,6 +541,15 @@ password appears anywhere in this file.
   page 2 repeatedly and compare the returned id sets.
 - **Proposed Fix:** Add `.order_by(Todo.created_at.desc(), Todo.id.desc())`, which
   also aligns with the composite index planned for Tier 3C.
+- **Tier 3C update.** The phrase "composite index planned for Tier 3C" above no
+  longer holds. Tier 3C measured a composite `(user_id, created_at DESC)` and
+  chose a single-column `ix_todos_user_id (user_id)` instead (`7716d12`),
+  because the application's list query has no `ORDER BY` and the composite
+  gave no measurable benefit without one. This finding was **deliberately not
+  fixed** in Tier 3C; its status stays `Open — static`. If it is fixed, the
+  ordered, `LIMIT`-ed query that results is exactly the case where the
+  composite index was measured to win (0.131 ms against 0.416 ms), and the
+  choice of index should be revisited. See `docs/DB_PERFORMANCE.md` §6.
 
 ### SEC-14 — N+1 query in todo listing
 
@@ -836,6 +845,30 @@ observation. It does **not** resolve SEC-08, which stays `Open — static`: `.en
 is still tracked by Git and still holds the signing key, and the Postgres
 password remains in the compose file. See the Tier 3B update under SEC-08.
 
+### State after Tier 3
+
+All three Tier 3 tasks are complete. No finding changed status in Tier 3; the
+counts remain 5 fixed, 4 reproduced, 1 suspected and 13 static.
+
+| Task | Commits | Outcome |
+|---|---|---|
+| **3A** Technical specification | `a38f1bc` | `docs/TODO_SHARING_SPEC.md` — design only, nothing implemented |
+| **3B** Docker and infrastructure | `8517b7d`, `7aea7f2`, `63238f5`, `ae29359` | Four of the five rubric items: healthchecks with readiness-gated startup, `.dockerignore`, an nginx frontend, a Redis password with `JWT_SECRET` read from the environment. The fifth, a production compose file, was deliberately not done. |
+| **3C** Database performance | `7716d12`, `3731351` | Index `ix_todos_user_id` on `todos (user_id)`, added by migration `a5ac6aec37c4` with `CREATE INDEX CONCURRENTLY`. On 1,000,000 todos, median execution time for the per-user queries fell from 20–35 ms to 0.07–0.25 ms. Evidence in `docs/DB_PERFORMANCE.md`. |
+
+Two findings bear directly on Tier 3 and are recorded as still open:
+
+- **SEC-13 was intentionally not fixed.** Tier 3C benchmarked an ordered query
+  as the rubric asks, but did not add `ORDER BY` to the application, since that
+  changes what users see. See the Tier 3C update under SEC-13.
+- **SEC-08 remains `Open — static`.** Tier 3B improved it only in part: the
+  signing key is no longer in `docker-compose.yml`, but `.env` is still tracked
+  by Git, still holds the key, and now also holds a Redis placeholder.
+
+After the Tier 3C migration, the backend suite passed (20) and the Playwright
+suite passed (3). The backend image was rebuilt so that the migration runs at
+startup; the previous image did not contain that revision.
+
 ---
 
 ## Test evidence
@@ -930,3 +963,4 @@ recorded above as reproduced.
 | 2026-09-19 | Tier 1 close. SEC-01 (`1e6984c`), SEC-02 (`b6089e4`), SEC-03 (`6a9ce9f`), SEC-07 (`ff7ce08`) and SEC-04 (`9957174`) marked `Fixed`, each with a regression test that failed before the change and passed after it. SEC-23 promoted from `Open — suspected` to `Reproduced` on observed runtime output, with its impact stated precisely and left unfixed. SEC-07 annotated with a known side effect and with a correction narrowing its original scope. Counts updated: 5 fixed, 1 reproduced, 1 suspected, 16 static. |
 | 2026-09-19 | Tier 2 close. No finding fixed. SEC-09, SEC-11 and SEC-12 promoted from `Open — static` to `Reproduced` on runtime output from `docs/TEST_PLAN.md` (TC-07; TC-02 and TC-03; TC-08 and TC-09). SEC-12 is reproduced for its logout half only; its refresh half was not exercised and stays static. SEC-12's reason corrected: since SEC-01 was fixed, a token survives logout until natural expiry, not indefinitely. SEC-03 given additional end-to-end evidence from the Playwright isolation test, status unchanged. Test evidence section added, recording 20 backend tests and 3 Playwright tests as run at `9a22c2f`. Counts updated: 5 fixed, 4 reproduced, 1 suspected, 13 static. |
 | 2026-09-19 | Tier 3B checkpoint. Infrastructure changes recorded: healthchecks and readiness-gated startup (`8517b7d`), `.dockerignore` (`7aea7f2`), nginx frontend (`63238f5`), Redis password with loopback binding and `JWT_SECRET` read from the environment (`ae29359`). The Tier 1 cold-boot observation is marked resolved. SEC-08 annotated as partially improved but **not fixed**, with its now-outdated reference to a hardcoded key in `docker-compose.yml` corrected; status unchanged at `Open — static`. No finding changed status. |
+| 2026-09-19 | Tier 3 close. Section "State after Tier 3" added, recording 3A (`a38f1bc`), 3B (`8517b7d`, `7aea7f2`, `63238f5`, `ae29359`) and 3C (`7716d12`, `3731351`; index `ix_todos_user_id` on `todos (user_id)`). SEC-13 annotated: its reference to a composite index planned for Tier 3C was outdated, since a single-column index was chosen; still **not fixed** and `Open — static`. SEC-08 still `Open — static`. No finding changed status. |

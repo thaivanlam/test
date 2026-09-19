@@ -308,7 +308,8 @@ has no `ORDER BY` (SEC-13).
 - It matches the predicate every current query shares, `user_id = $1`, and
   removes the measured bottleneck on all four.
 - It also serves the count as an index-only scan, through its only column.
-- It is 5.5× smaller than the composite, and costs less on every write (§7).
+- It is about 5.6× smaller than the composite (7,096 kB against 39 MB), and
+  costs less on every write (§7).
 - The composite offered nothing measurable on the queries the application
   sends or the rubric names.
 

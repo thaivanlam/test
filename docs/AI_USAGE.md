@@ -112,6 +112,8 @@ no entry has been invented or embellished.
 | 28 | 2026-09-19 | Tier 3B — Redis and secrets | Require a Redis password and stop writing secrets in `docker-compose.yml`. | Redis behind `--requirepass`, bound to `127.0.0.1`; `JWT_SECRET` and `REDIS_PASSWORD` read from the environment with a fail-fast check. Where to keep the Redis value was put to the human, who chose a placeholder in the tracked `.env` so the stack still starts with one command. Commit `ae29359`. | Connections without a password and with a wrong one both refused. The application's own cache write confirmed on the exact key for a fresh user. A key count was rejected as evidence, because Redis keeps `/data` in an anonymous volume that survives recreation. No secret in any image layer. **SEC-08 remains open and was not remediated**: `.env` is still tracked, and this change added to it. |
 | 29 | 2026-09-19 | Documentation | Close Tier 3B in the working guide, the test plan and the audit. | Current Compose behaviour documented; the cold-boot limitation kept as observed with its resolution added beside it; a Tier 3B section and a SEC-08 annotation in the audit. Commit `53afd38`. | Only documentation changed; no recorded test result altered; finding counts unchanged; SEC-08 left at `Open — static`. |
 | 30 | 2026-09-19 | Documentation | Record Tier 3 in this log. | Entries 23 to 30. | Existing entries left as they were; no secret values. |
+| 31 | 2026-09-19 | Tier 3C — database performance | Seed 10,000 users and 1,000,000 todos, measure the per-user queries with `EXPLAIN ANALYZE` before indexing, choose an index from the evidence, add it by migration, measure again. Do not fix SEC-13. | Query plans read and a repeatable benchmark designed: a fixed user chosen by rule, 7 runs per query, every run kept. The rubric's suggested composite `(user_id, created_at DESC)` was **tested rather than assumed**, alongside `(user_id)`. The composite was no faster on the measured queries, 39 MB against 7,096 kB, and slower to write, so `(user_id)` was chosen. Migration `a5ac6aec37c4` uses `CREATE INDEX CONCURRENTLY` inside an autocommit block. Commits `7716d12` and `3731351`. | `EXPLAIN (ANALYZE, BUFFERS)` 7 times per query, before and after; write overhead measured with rolled-back inserts. Upgrade, downgrade and re-upgrade run against the full table. Backend suite (20), Playwright (3) and flake8 passed. Every figure in `docs/DB_PERFORMANCE.md` was checked by script against the raw output. |
+| 32 | 2026-09-19 | Documentation | Close Tier 3 in the audit and this log, and check the documents for statements Tier 3 made outdated. | "State after Tier 3" in the audit; entries 31 and 32 here. | The check found two factual errors, both fixed: SEC-13's proposed fix still pointed to a composite index planned for Tier 3C, and `DB_PERFORMANCE.md` understated the index size ratio as 5.5× where the measured sizes give about 5.6×. SEC-08 and SEC-13 left `Open — static`; no benchmark figure changed. |
 
 ### Notes on this log
 
@@ -123,6 +125,15 @@ no entry has been invented or embellished.
   suite (20 tests) was re-run and passed after the healthcheck, `.dockerignore`
   and Redis changes; it was not re-run for the nginx change, which touched only
   the frontend image.
+- Entries 31 and 32 continue the same session. Three deviations in Tier 3C are
+  recorded so they are not mistaken for oversights. The development database
+  held 41 todos; they were exported with `pg_dump` to a file outside the
+  repository, and then **only the `todos` table** was truncated, because the
+  seed script refuses to add todos while any exist. Users were not touched.
+  The benchmark itself ran on **exactly 10,000 users and 1,000,000 todos**. The
+  Playwright regression run afterwards added 3 users and 2 todos, so the
+  database now holds **10,003 and 1,000,002** — a later state, not the one
+  measured.
 - In Tier 2 the assistant checked its own tests for false passes, not just for
   passing. The smoke test was run against nothing, and the isolation test's key
   assertion was aimed where it had to fail. A passing test was only accepted
