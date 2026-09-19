@@ -97,12 +97,35 @@ no entry has been invented or embellished.
 | 13 | 2026-09-19 | Tier 1 fix — SEC-07 | Fix the frontend logout cache leak. Report the verification options before building any test infrastructure. | Reported that the frontend has no test runner at all, and proposed driving a real browser rather than introducing Vitest. On approval: full stack brought up, scenario driven in a browser, then `queryClient.clear()` added to both logout paths. | The API was checked by `curl` first, so the leak could be attributed to the client. Before the fix the browser showed A's email and A's private todo to B; after, B's own. `tsc -b && vite build` exits 0. **No automated frontend test exists**; this was manual browser verification. |
 | 14 | 2026-09-19 | Tier 1 fix — SEC-04 | Fix the missing cache invalidation. Cover multiple pages and confirm other users keep their cache. | `RedisClient.delete_pattern` using `SCAN MATCH` via `scan_iter` rather than blocking `KEYS`, and a shared invalidation helper called from create, update and delete. | Four of five tests failed before the fix and all five passed after; full suite 20 passing. The fifth test passes either way, so its teeth were checked by temporarily widening the pattern until it failed, then reverting. Also verified against real Redis, since the fake matches keys with `fnmatch` and never exercises `scan_iter`. |
 | 15 | 2026-09-19 | Documentation | Close Tier 1: update the audit statuses and this log to match what was actually done. | Five findings moved to `Fixed` with commit references, SEC-23 promoted to `Reproduced` on observed output, SEC-07 annotated with its side effect and a scope correction. | Statuses cross-checked against `git log` and the recorded test output. The distinction between the original static audit and what has since been demonstrated was preserved rather than flattened. |
+| 16 | 2026-09-19 | Tier 2 — inspect | Read the Tier 2 rubric from the root README and map it against the repository. Change nothing. | A rubric-to-evidence table. Tier 2A was already over its threshold of three scenarios, from tests written during Tier 1; the two uncovered scenarios both depend on SEC-05 and SEC-06, which are unfixed. Playwright and the manual test plan did not exist. | Read-only commands only. `git status --short` empty at the end. |
+| 17 | 2026-09-19 | Tier 2A — backend tests | No new backend tests were written in Tier 2. The existing suite was re-run to record current evidence. | — | `20 passed` inside the backend container, at commits `9957174` and again at `9a22c2f`. |
+| 18 | 2026-09-19 | Tier 2C — manual test plan | Write an authentication and authorization test plan from the template, with actual results drawn from real evidence and executed and unexecuted cases kept apart. | `docs/TEST_PLAN.md`, 17 cases. The template had no Actual Result column, which the rubric requires, so one was added. Rather than fill most rows with "not executed", the assistant restarted the stack — which had stopped between sessions — and ran a read-only probe script that registered throwaway accounts and walked the cases. | Fifteen cases executed and two not. Of the fifteen, thirteen were HTTP calls against the running stack, one a manual browser session, one covered by the automated suite. Four failed, confirming SEC-09, SEC-11 and SEC-12 at runtime for the first time. No password or token appears in the document. |
+| 19 | 2026-09-19 | Tier 2B — Playwright setup | Set up Playwright from scratch in `e2e/`, targeting the running stack without a `webServer` block, with one smoke test. | `e2e/package.json`, `playwright.config.ts` and a smoke test using role-based locators. `.gitignore` extended for Playwright's report and results directories. | Passes headless, headed, and through both npm scripts. Pointed at a port with nothing listening, it failed with `ERR_CONNECTION_REFUSED`, confirming the `BASE_URL` override and that the test is not vacuous. That failing run also showed the output directories would have been committed, which is why they were ignored. |
+| 20 | 2026-09-19 | Tier 2B — Full User Journey | Register, create a todo, complete it, verify it, log out — through the browser, with meaningful assertions and no API shortcuts. | A test whose assertions were chosen from the components: `toBeChecked` on the Radix checkbox, computed `text-decoration-line` for the visible strike-through, a reload to read completion back from the server rather than the optimistic update, and a protected-route redirect to prove logout ended the session. | Passes headless and headed; five parallel repeats under `--repeat-each=5`. Credentials generated per run and never logged. |
+| 21 | 2026-09-19 | Tier 2B — Cross-User Isolation | User A creates a private todo; user B, in a separate session, must not see it. Independent contexts, no injected state, no API calls. | Two contexts from `browser.newContext()`, both users registering through the UI. The test waits for B's list to reach its loaded-empty state before asserting absence, since loading and error states would also hide the todo. | Passes alone, in the full suite, under `--repeat-each=3` (nine runs), and headed. The negative assertion was temporarily pointed at A's page and failed with `Expected: hidden, Received: visible`, then restored. |
+| 22 | 2026-09-19 | Documentation | Close Tier 2: update the audit and this log. | SEC-09, SEC-11 and SEC-12 moved to `Reproduced`; a test evidence section added to the audit. | Both suites re-run immediately beforehand, so the counts recorded are from that run: 20 backend, 3 Playwright. Statuses cross-checked mechanically across the audit's index, summary and every finding section. |
 
 ### Notes on this log
 
-- Entries 2 through 15 were carried out in a single Claude Code session, so the
+- Entries 2 through 22 were carried out in a single Claude Code session, so the
   sequence is recorded from that session's history rather than reconstructed
   from memory.
+- In Tier 2 the assistant checked its own tests for false passes, not just for
+  passing. The smoke test was run against nothing, and the isolation test's key
+  assertion was aimed where it had to fail. A passing test was only accepted
+  once it had been shown it could fail.
+- The Playwright tests use no API shortcuts, inject no auth state, and depend on
+  no pre-existing account; each run registers fresh users with generated
+  credentials. No secret or token was committed. There is no CI, no frontend
+  unit-test runner and no coverage measurement, and none is claimed.
+- **A correction.** The commit message of `b705166` and the assistant's report at
+  the time both said fourteen test plan cases were executed as HTTP calls. The
+  correct figure is thirteen: the fifteenth executed case, TC-17, is covered by
+  the automated suite, not by an HTTP call. `docs/TEST_PLAN.md` itself labels
+  every row correctly; only the summary sentence was wrong. The commit had
+  already been pushed, so it was not rewritten; the correct figure appears in
+  entry 18 and in the audit. The error was found while cross-checking counts for
+  entry 22.
 - Entries 10 to 14 are the five Tier 1 fixes. Each followed the same sequence:
   a test written to reproduce the defect, the failure recorded, the change made,
   the test passing recorded, then the full suite re-run. No fix was committed on
@@ -150,11 +173,13 @@ executed result wins. A finding that a model is confident about but that no test
 demonstrates remains a static finding.
 
 That rule decided what each finding is allowed to claim. Five were promoted to
-`Fixed` because a test failed before the change and passed after it, and one to
-`Reproduced` because its warning was observed in captured output. The other
-seventeen still say `Open — static` or `Open — suspected`, because nothing has
-been run against them. The document says which is which rather than presenting
-twenty-three equally confident conclusions.
+`Fixed` because a test failed before the change and passed after it. Four are
+`Reproduced`: one because its warning was observed in captured output, three
+because the manual test plan ran them against the live stack — and none of
+those four is called fixed, because none was. The other fourteen still say
+`Open — static` or `Open — suspected`, because nothing has been run against
+them. The document says which is which rather than presenting twenty-three
+equally confident conclusions.
 
 The same rule cut the other way twice. In SEC-03 a passing test was rejected as
 evidence once it turned out the mock could not express the defect. In SEC-07 a

@@ -50,9 +50,15 @@ record it failing, apply the fix, record it passing, then run the full suite
 to check for regressions. Findings are promoted only on that evidence.
 
 Tier 1 closed with five findings fixed this way — SEC-01, SEC-02, SEC-03,
-SEC-04 and SEC-07 — and one, SEC-23, observed at runtime but left alone. Of the
-seventeen that remain, sixteen are `Open — static` and one is
-`Open — suspected`: read, reasoned about, and not demonstrated. They are
+SEC-04 and SEC-07 — and one, SEC-23, observed at runtime but left alone.
+
+Tier 2 fixed nothing further. Its manual test plan, `docs/TEST_PLAN.md`, ran
+the authentication paths against the live stack and reproduced three findings
+that until then rested on reading alone: SEC-09, SEC-11 and SEC-12. They move
+to `Reproduced`, not `Fixed`.
+
+Of the fourteen findings not yet demonstrated, thirteen are `Open — static`
+and one is `Open — suspected`: read, reasoned about, and not run. They are
 reported rather than claimed.
 
 ### A note on credentials
@@ -82,9 +88,9 @@ password appears anywhere in this file.
 
 | Status | Count |
 |---|---|
-| `Open — static` | 16 |
+| `Open — static` | 13 |
 | `Open — suspected` | 1 |
-| `Reproduced` | 1 |
+| `Reproduced` | 4 |
 | `Fixed` | 5 |
 
 ### Index
@@ -99,10 +105,10 @@ password appears anywhere in this file.
 | SEC-06 | High | Logic | Partial update erases `description` | `Open — static` |
 | SEC-07 | High | Frontend | Logout does not clear the query cache | `Fixed` (`ff7ce08`) |
 | SEC-08 | High | Secrets | `.env` is tracked by Git and contains a signing key | `Open — static` |
-| SEC-09 | High | Auth | Token type not validated; refresh token usable as access token | `Open — static` |
+| SEC-09 | High | Auth | Token type not validated; refresh token usable as access token | `Reproduced` |
 | SEC-10 | Medium | Database | `users.email` has no unique constraint | `Open — static` |
-| SEC-11 | Medium | Auth | User enumeration via distinct login error responses | `Open — static` |
-| SEC-12 | Medium | Auth | Logout is a no-op; no token revocation; refresh does not re-check user | `Open — static` |
+| SEC-11 | Medium | Auth | User enumeration via distinct login error responses | `Reproduced` |
+| SEC-12 | Medium | Auth | Logout is a no-op; no token revocation; refresh does not re-check user | `Reproduced` (logout half) |
 | SEC-13 | Medium | Database | Pagination without `ORDER BY` | `Open — static` |
 | SEC-14 | Medium | Performance | N+1 query in todo listing | `Open — static` |
 | SEC-15 | Medium | Security | CORS wildcard origin combined with credentials | `Open — static` |
@@ -218,6 +224,12 @@ password appears anywhere in this file.
 - **Verification:** Both tests pass afterwards; suite 13 to 15. The older tests
   stayed green even though they now run against a cache that actually functions,
   which is closer to production than the conditions they were written under.
+- **Additional evidence (Tier 2):** the Playwright Cross-User Data Isolation
+  test (`9a22c2f`) exercises this end to end, against real Redis rather than the
+  test fake. User A reads the list — populating A's cache entry — before user
+  B, in a separate browser session, reads theirs. Under the old shared key B
+  would have been served A's cached list; B saw only its own empty list. The
+  status is unchanged: this corroborates a fix, it does not make one.
 
 ---
 
@@ -381,7 +393,7 @@ password appears anywhere in this file.
 
 - **Severity:** High
 - **Location:** `backend/app/api/deps.py:16-51`, `get_current_user()`
-- **Status:** `Open — static`
+- **Status:** `Reproduced` — observed at runtime in Tier 2, not fixed
 - **Reason:** The dependency does not check `payload.get("type") == "access"`,
   while `/auth/refresh` does perform that check (`auth.py:86`). The asymmetry
   means a refresh token is accepted as an access token on every protected
@@ -393,11 +405,13 @@ password appears anywhere in this file.
   ```
   29:    user_id = payload.get("sub")
   ```
-- **Reproduction (not yet executed):** Authenticate, then call
-  `GET /api/v1/auth/me` presenting the refresh token as the bearer credential.
-  Expected `401`; the code path indicates `200`.
+- **Reproduction (executed):** `docs/TEST_PLAN.md` TC-07. A freshly issued
+  refresh token was presented as the bearer credential to `GET /auth/me`
+  against the running stack. The endpoint answered `200` and returned the user,
+  where `401` was expected. A seven-day refresh token therefore works as a
+  credential on every protected endpoint.
 - **Proposed Fix:** After decoding, reject the request when
-  `payload.get("type") != "access"`.
+  `payload.get("type") != "access"`. Not applied.
 
 ---
 
@@ -434,7 +448,7 @@ password appears anywhere in this file.
 
 - **Severity:** Medium
 - **Location:** `backend/app/api/v1/auth.py:52-66`
-- **Status:** `Open — static`
+- **Status:** `Reproduced` — observed at runtime in Tier 2, not fixed
 - **Reason:** An unknown address returns `404 "User with this email not found"`
   while a known address with the wrong password returns `401 "Incorrect
   password"`. The distinction lets an attacker determine which addresses are
@@ -449,18 +463,24 @@ password appears anywhere in this file.
           raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
               detail="Incorrect password",)
   ```
-- **Reproduction (not yet executed):** Log in with an unregistered address, then
-  with a registered address and an incorrect password; compare status codes.
+- **Reproduction (executed):** `docs/TEST_PLAN.md` TC-02 and TC-03, against the
+  running stack. A registered address with a wrong password returned
+  `401, detail: "Incorrect password"`; an unregistered address returned
+  `404, detail: "User with this email not found"`. Status and message both
+  differ, exactly as the source indicated, so whether an address is registered
+  can be read off the response.
 - **Proposed Fix:** Collapse both branches into a single
   `401 "Invalid email or password"`. `authenticate_user()` already exists at
   `backend/app/services/auth_service.py:33-39` and is currently called nowhere.
+  Not applied.
 
 ### SEC-12 — Logout is a no-op and refresh does not re-check the user
 
 - **Severity:** Medium
 - **Location:** `backend/app/api/v1/auth.py:102-107` (`logout`), `:84-99`
   (`refresh_token`)
-- **Status:** `Open — static`
+- **Status:** `Reproduced` for the logout half; the refresh half is still
+  `Open — static`. Not fixed.
 - **Reason:** Two related gaps. `logout` returns a message and revokes nothing, so
   the presented token stays valid — indefinitely, given SEC-01. A `jti` claim is
   generated at `security.py:42` but is never stored or consulted, indicating an
@@ -476,11 +496,22 @@ password appears anywhere in this file.
   async def logout(current_user: User = Depends(get_current_user)):
       return {"message": "Successfully logged out"}
   ```
-- **Reproduction (not yet executed):** Authenticate, call `POST /auth/logout`,
-  then reuse the same token against a protected endpoint.
+- **Reproduction (executed, logout half):** `docs/TEST_PLAN.md` TC-08 and TC-09.
+  `POST /auth/logout` returned `200`, and the same access token was then reused
+  on `GET /auth/me`, which also returned `200`. Logging out revoked nothing.
+- **Not reproduced:** the second gap — `refresh` issuing tokens without
+  confirming the user still exists — was not exercised. It would need a user
+  deleted between issuing and presenting a refresh token, and no test or plan
+  case does that. That half remains a static finding.
+- **Correction to the reason above:** it says the token stays valid
+  "indefinitely, given SEC-01". SEC-01 has since been fixed, so expiry is now
+  enforced. A token reused after logout stays valid until its natural expiry —
+  30 minutes for an access token, 7 days for a refresh token — not forever. The
+  defect is real; its reach is bounded.
 - **Proposed Fix:** On logout, record the refresh token's `jti` in a Redis denylist
   with a TTL matching the token's remaining lifetime. In `refresh`, load the user
   from the database and reject denylisted identifiers before issuing new tokens.
+  Not applied.
 
 ### SEC-13 — Pagination without `ORDER BY`
 
@@ -771,6 +802,97 @@ on a cold `docker compose up`, the backend exits 1 with
 for the database to become ready. It was worked around by restarting the
 container, not fixed, and it belongs to the Docker work in Tier 3B.
 
+### State at the close of Tier 2
+
+No finding was fixed in Tier 2. What changed is how much is demonstrated: three
+authentication findings — SEC-09, SEC-11 and SEC-12 — were reproduced by the
+manual test plan and now carry recorded runtime output. The remaining counts are
+13 static, 1 suspected, 4 reproduced and 5 fixed.
+
+---
+
+## Test evidence
+
+Recorded as run. Counts are from the suites executed at commit `9a22c2f`, not
+estimated.
+
+### Backend — pytest (Tier 2A)
+
+`20 passed`, run inside the backend container:
+
+```bash
+docker compose run --rm --no-deps -v "$PWD/backend:/app" backend pytest tests/ -v
+```
+
+The assessment asks for at least three of five scenarios. Three are covered:
+
+| Scenario | Tests |
+|---|---|
+| Expired or tampered JWT rejected | `test_expired_access_token_is_rejected` |
+| User A cannot read, update or delete user B's todos | `test_user_cannot_read_another_users_todo`, `…_update_…`, `…_delete_…` |
+| Mutation removes stale Redis cache | five tests in `test_todos.py`, from `test_creating_todo_invalidates_cached_list` to `test_mutation_does_not_invalidate_other_users_cache` |
+
+The other two scenarios are **not covered**. Toggling `completed` back to
+`false` and preserving `description` on a partial update both depend on
+SEC-05 and SEC-06, which are unfixed, so a test for either would fail today.
+
+The suite runs against SQLite and an in-memory `FakeRedis` defined in
+`tests/conftest.py`; it does not exercise Postgres or a real Redis server.
+
+### End-to-end — Playwright (Tier 2B)
+
+`3 passed`, against the running Docker stack:
+
+```bash
+docker compose up -d
+cd e2e && npm install && npx playwright install chromium
+npx playwright test            # headless
+npx playwright test --headed   # headed
+```
+
+| Test | Commit | What it establishes |
+|---|---|---|
+| `smoke.spec.ts` | `2043042` | The suite reaches a running frontend and the app has rendered |
+| `full-user-journey.spec.ts` | `0653791` | Register, create a todo, complete it, verify it — including after a reload from the server — and log out, with the protected route confirmed to redirect afterwards |
+| `cross-user-isolation.spec.ts` | `9a22c2f` | A todo created by user A is not visible to user B in a separate session |
+
+How they were verified:
+
+- All three pass headless and headed.
+- Full User Journey passed five times in parallel under `--repeat-each=5`.
+  The whole suite passed nine runs under `--repeat-each=3`.
+- Cross-User Isolation opens two independent browser contexts from the same
+  `browser` fixture, so each user has separate `localStorage` and therefore a
+  separate session. Both users register through the UI.
+- No API call is made anywhere in the three tests, and no token, cookie or
+  storage value is injected. Every scenario runs through the browser.
+- Credentials are generated per run and never logged; no test depends on a
+  pre-existing account.
+- The negative assertion in Cross-User Isolation was checked for teeth by
+  temporarily pointing it at user A's page, where the todo is present. It
+  failed with `Expected: hidden, Received: visible`, and was restored.
+- The smoke test was pointed at a port with nothing listening and failed with
+  `ERR_CONNECTION_REFUSED`, confirming it depends on the stack rather than
+  passing vacuously.
+
+Scope limits, stated so they are not inferred:
+
+- There is no CI. Every run above was executed by hand against a local stack.
+- The frontend has no unit-test runner. Playwright is its only automated
+  coverage, and it drives the whole stack rather than components in isolation.
+- No coverage measurement exists for either suite, and none is claimed.
+- The tests start no stack of their own and leave their data behind; each run
+  adds users and todos to the database.
+
+### Manual — test plan (Tier 2C)
+
+`docs/TEST_PLAN.md`: 17 cases, 11 authentication and 6 authorization. Fifteen
+were executed — thirteen as HTTP calls against the running stack, one as a
+manual browser session, and one covered by the automated backend suite — and
+two were written but not run. Of the executed cases, eleven pass and four
+fail. The four failures are SEC-09, SEC-11 (two cases) and SEC-12, all
+recorded above as reproduced.
+
 ---
 
 ## Change log
@@ -779,3 +901,4 @@ container, not fixed, and it belongs to the Docker work in Tier 3B.
 |---|---|
 | 2026-09-19 | Initial audit. 23 findings recorded from static analysis; none reproduced at runtime. |
 | 2026-09-19 | Tier 1 close. SEC-01 (`1e6984c`), SEC-02 (`b6089e4`), SEC-03 (`6a9ce9f`), SEC-07 (`ff7ce08`) and SEC-04 (`9957174`) marked `Fixed`, each with a regression test that failed before the change and passed after it. SEC-23 promoted from `Open — suspected` to `Reproduced` on observed runtime output, with its impact stated precisely and left unfixed. SEC-07 annotated with a known side effect and with a correction narrowing its original scope. Counts updated: 5 fixed, 1 reproduced, 1 suspected, 16 static. |
+| 2026-09-19 | Tier 2 close. No finding fixed. SEC-09, SEC-11 and SEC-12 promoted from `Open — static` to `Reproduced` on runtime output from `docs/TEST_PLAN.md` (TC-07; TC-02 and TC-03; TC-08 and TC-09). SEC-12 is reproduced for its logout half only; its refresh half was not exercised and stays static. SEC-12's reason corrected: since SEC-01 was fixed, a token survives logout until natural expiry, not indefinitely. SEC-03 given additional end-to-end evidence from the Playwright isolation test, status unchanged. Test evidence section added, recording 20 backend tests and 3 Playwright tests as run at `9a22c2f`. Counts updated: 5 fixed, 4 reproduced, 1 suspected, 13 static. |
