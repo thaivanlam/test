@@ -5,6 +5,7 @@ from fnmatch import fnmatch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Use SQLite for tests before app modules initialize their default engine.
@@ -18,6 +19,18 @@ from app.db.session import get_db
 from app.main import app
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+
+
+# SQLite ignores foreign keys unless each connection turns them on. Postgres
+# always enforces them, so without this the tests could not observe ON DELETE
+# CASCADE, and would accept rows that point at nothing.
+@event.listens_for(test_engine.sync_engine, "connect")
+def enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 test_session_maker = async_sessionmaker(
     test_engine,
     class_=AsyncSession,
