@@ -114,6 +114,68 @@ async def test_completed_can_be_set_back_to_false(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_partial_update_keeps_description(client: AsyncClient):
+    """Fields the client does not send must be left as they were.
+
+    An update that omits description is not a request to clear it. Each step
+    is read back with GET, so the check is on what was stored.
+    """
+    token = await get_auth_token(client, "partial-update@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_response = await client.post(
+        "/api/v1/todos",
+        json={"title": "Keep my notes", "description": "important details"},
+        headers=headers,
+    )
+    todo_id = create_response.json()["id"]
+
+    # Only completed is sent.
+    response = await client.put(
+        f"/api/v1/todos/{todo_id}", json={"completed": True}, headers=headers
+    )
+    assert response.status_code == 200
+    fetched = await client.get(f"/api/v1/todos/{todo_id}", headers=headers)
+    assert fetched.json()["completed"] is True
+    assert fetched.json()["description"] == "important details"
+
+    # Only title is sent.
+    response = await client.put(
+        f"/api/v1/todos/{todo_id}", json={"title": "Renamed"}, headers=headers
+    )
+    assert response.status_code == 200
+    fetched = await client.get(f"/api/v1/todos/{todo_id}", headers=headers)
+    assert fetched.json()["title"] == "Renamed"
+    assert fetched.json()["description"] == "important details"
+
+
+@pytest.mark.asyncio
+async def test_description_can_be_cleared_explicitly(client: AsyncClient):
+    """Sending description as null still clears it.
+
+    The schema allows null for description, so an explicit null is a
+    deliberate request, and must stay distinct from leaving the field out.
+    """
+    token = await get_auth_token(client, "clear-description@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_response = await client.post(
+        "/api/v1/todos",
+        json={"title": "Clear my notes", "description": "to be removed"},
+        headers=headers,
+    )
+    todo_id = create_response.json()["id"]
+
+    response = await client.put(
+        f"/api/v1/todos/{todo_id}", json={"description": None}, headers=headers
+    )
+    assert response.status_code == 200
+    fetched = await client.get(f"/api/v1/todos/{todo_id}", headers=headers)
+    assert fetched.json()["description"] is None
+    assert fetched.json()["title"] == "Clear my notes"
+
+
+@pytest.mark.asyncio
 async def test_delete_todo(client: AsyncClient):
     """Test deleting a todo."""
     token = await get_auth_token(client, "delete@example.com")

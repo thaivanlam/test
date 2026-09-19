@@ -133,7 +133,11 @@ async def update_existing_todo(
             detail="Todo not found",
         )
 
-    update_data = todo_data.model_dump()
+    # exclude_unset: only fields the client actually sent. Without it, an
+    # omitted field appears as None and `"description" in update_data` is
+    # always true, so any update cleared the description. An explicit
+    # `"description": null` is still present and still clears it.
+    update_data = todo_data.model_dump(exclude_unset=True)
 
     # `is not None`, not truthiness: False is a value the client sent, and
     # must be applied just like True.
