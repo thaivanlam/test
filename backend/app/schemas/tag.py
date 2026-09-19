@@ -33,6 +33,16 @@ class TagUpdate(BaseModel):
         return value
 
 
+class TagSummary(BaseModel):
+    """A tag as shown on a todo: what the UI needs to render it, no more."""
+
+    id: uuid.UUID
+    name: str
+    color: str | None
+
+    model_config = {"from_attributes": True}
+
+
 class TodoTagAttach(BaseModel):
     tag_id: uuid.UUID
 

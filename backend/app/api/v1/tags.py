@@ -3,7 +3,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_redis
+from app.core.redis import RedisClient
 from app.db.session import get_db
 from app.models.tag import Tag
 from app.models.user import User
@@ -15,6 +16,7 @@ from app.services.tag_service import (
     get_tags,
     update_tag,
 )
+from app.services.todo_cache import invalidate_todo_list_cache
 
 router = APIRouter()
 
@@ -66,12 +68,16 @@ async def update_existing_tag(
     tag_data: TagUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
 ):
     """Rename a tag and/or change its color. Omitted fields are kept."""
     tag = await get_own_tag_or_404(db, tag_id, current_user.id)
     # exclude_unset, as in the todo update: an omitted field keeps its value,
     # while an explicit "color": null clears the color.
-    return await update_tag(db, tag, tag_data.model_dump(exclude_unset=True))
+    updated = await update_tag(db, tag, tag_data.model_dump(exclude_unset=True))
+    # Cached todo lists embed each tag's name and color.
+    await invalidate_todo_list_cache(redis, current_user.id)
+    return updated
 
 
 @router.delete("/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -79,8 +85,11 @@ async def delete_existing_tag(
     tag_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
 ):
     """Delete a tag. It is removed from every todo; the todos are kept."""
     tag = await get_own_tag_or_404(db, tag_id, current_user.id)
     await delete_tag(db, tag)
+    # Cached todo lists still show the tag on the todos it was attached to.
+    await invalidate_todo_list_cache(redis, current_user.id)
     return None

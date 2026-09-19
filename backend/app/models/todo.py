@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.models.tag import Tag
     from app.models.user import User
 
 
@@ -63,6 +64,16 @@ class Todo(Base):
         "User",
         back_populates="todos",
         lazy="select",
+    )
+    # lazy="raise": under asyncio an implicit lazy load fails with
+    # MissingGreenlet at serialization time, far from the query that forgot to
+    # load the tags. Raising makes that mistake immediate and obvious; every
+    # query whose todos are returned loads tags with selectinload.
+    tags: Mapped[list["Tag"]] = relationship(  # noqa: F821
+        "Tag",
+        secondary="todo_tags",
+        order_by="Tag.name",
+        lazy="raise",
     )
 
     def __repr__(self) -> str:

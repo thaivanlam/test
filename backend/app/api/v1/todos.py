@@ -1,8 +1,7 @@
-import json
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_redis
@@ -12,7 +11,10 @@ from app.models.user import User
 from app.schemas.tag import TodoTagAttach
 from app.schemas.todo import TodoCreate, TodoListResponse, TodoResponse, TodoUpdate
 from app.services.tag_service import attach_tag, detach_tag, get_tag_by_id
+from app.services.todo_cache import invalidate_todo_list_cache, todo_list_cache_key
 from app.services.todo_service import (
+    TodoFilters,
+    TodoStatus,
     create_todo,
     delete_todo,
     get_todo_by_id,
@@ -23,67 +25,98 @@ from app.services.todo_service import (
 router = APIRouter()
 
 CACHE_TTL = 300  # 5 minutes
-
-
-async def invalidate_todo_list_cache(redis: RedisClient, user_id: uuid.UUID) -> None:
-    """Drop every cached list page belonging to one user.
-
-    The cache key carries page and size, so a user can hold several entries at
-    once and a mutation makes all of them stale, not just the page that was
-    read most recently. The pattern is scoped to the user so that nobody
-    else's cache is thrown away.
-    """
-    await redis.delete_pattern(f"todos:list:{user_id}:*")
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 
 
 @router.get("", response_model=TodoListResponse)
 async def list_todos(
     page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1),
+    page_size: int | None = Query(None, ge=1, le=MAX_PAGE_SIZE),
+    size: int | None = Query(
+        None,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        deprecated=True,
+        description="Old name for page_size, kept for existing clients.",
+    ),
+    # "status" is also the name of the fastapi.status module used below, so
+    # the parameter is bound under another name and exposed as "status".
+    status_filter: TodoStatus | None = Query(None, alias="status"),
+    tag_id: uuid.UUID | None = Query(None),
+    keyword: str | None = Query(None, max_length=200),
+    date_from: date | None = Query(
+        None, description="Inclusive, whole UTC day, YYYY-MM-DD."
+    ),
+    date_to: date | None = Query(
+        None, description="Inclusive, whole UTC day, YYYY-MM-DD."
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis: RedisClient = Depends(get_redis),
 ):
-    """Get paginated list of todos."""
-    skip = (page - 1) * size
+    """List the current user's todos, newest first, filtered and paginated."""
+    if page_size is not None and size is not None and page_size != size:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="page_size and size disagree; send only page_size",
+        )
+    effective_page_size = page_size or size or DEFAULT_PAGE_SIZE
 
-    # Scoped to the caller and to the query: a shared key served one user's
-    # todos to every other user, and one page's results for every page.
-    cache_key = f"todos:list:{current_user.id}:{page}:{size}"
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date_from must not be after date_to",
+        )
 
-    # Try to get from cache
+    # Another user's tag is answered like a missing one, the same 404 the tag
+    # endpoints give. Checked before the cache is read, so the answer does not
+    # depend on what happens to be cached.
+    if tag_id is not None and not await get_tag_by_id(db, tag_id, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tag not found",
+        )
+
+    filters = TodoFilters.normalize(
+        status=status_filter,
+        tag_id=tag_id,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    cache_key = todo_list_cache_key(current_user.id, filters, page, effective_page_size)
+
     cached = await redis.get(cache_key)
     if cached:
-        cached_data = json.loads(cached)
-        return TodoListResponse(**cached_data)
+        return TodoListResponse.model_validate_json(cached)
 
-    todos, total = await get_todos(db, user_id=current_user.id, skip=skip, limit=size)
+    todos, total = await get_todos(
+        db,
+        user_id=current_user.id,
+        filters=filters,
+        skip=(page - 1) * effective_page_size,
+        limit=effective_page_size,
+    )
 
-    items = []
-    for todo in todos:
-        user_result = await db.execute(select(User).where(User.id == todo.user_id))
-        user = user_result.scalar_one_or_none()
-        items.append(
-            TodoResponse(
-                id=todo.id,
-                title=todo.title,
-                description=todo.description,
-                completed=todo.completed,
-                user_id=todo.user_id,
-                created_at=todo.created_at,
-                updated_at=todo.updated_at,
-                user_email=user.email if user else None,
-            )
+    # Every todo here belongs to current_user, so the owner's email is already
+    # known; looking it up once per todo was an N+1 query (SEC-14).
+    items = [
+        TodoResponse.model_validate(todo).model_copy(
+            update={"user_email": current_user.email}
         )
+        for todo in todos
+    ]
 
     response = TodoListResponse(
         items=items,
         total=total,
         page=page,
-        size=size,
+        size=effective_page_size,
+        page_size=effective_page_size,
+        pages=(total + effective_page_size - 1) // effective_page_size,
     )
 
-    # Cache the response
     await redis.set(cache_key, response.model_dump_json(), ex=CACHE_TTL)
 
     return response
