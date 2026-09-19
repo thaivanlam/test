@@ -37,8 +37,11 @@ automated test in `backend/tests/` covers the same behaviour.
 
 - Backend: `http://localhost:8000`
 - Frontend: `http://localhost:3000`
-- Stack started with `docker compose up -d`. The backend must be started after
-  Postgres is accepting connections; on a cold boot it exits 1 (see §4).
+- Stack started with `docker compose up -d`. Compose reads `REDIS_PASSWORD` and
+  `JWT_SECRET` from the root `.env` and refuses to start if either is missing.
+  Since `8517b7d` the backend waits for Postgres and Redis to report healthy, so
+  no manual restart is needed. When this plan was executed, at `23db3f6`, that
+  wait did not exist and a cold boot needed one (see §4).
 - Test accounts are disposable and created by the test steps themselves, so the
   plan can be re-run from an empty database. The API run used
   `tc-alice-<timestamp>@example.com` and `tc-bob-<timestamp>@example.com`; the
@@ -100,13 +103,21 @@ None of these were fixed during Tier 1. They are reported in
   runner in the repository, so every other row is an API-level check. Browser
   coverage of these paths is Tier 2B's job.
 
-### Environment limitation
+### Environment limitation — at the time of execution
 
 On a cold `docker compose up`, the backend container exits 1 with
 `ConnectionRefusedError` against Postgres, because `depends_on` does not wait
 for the database to be ready. The workaround while running this plan was to
 start the backend again once Postgres was accepting connections. It is not a
 defect in the application and belongs to the Docker work in Tier 3B.
+
+**Since resolved, in `8517b7d` (Tier 3B).** Postgres and Redis now have
+healthchecks and the backend waits for `service_healthy`. The race turned out to
+depend on timing: with an existing data volume, three cold boots of the old
+configuration all succeeded; on a fresh volume, where `initdb` makes Postgres
+slow to come up, it failed. After the fix, three boots on a fresh volume
+succeeded. The results recorded in this plan were produced under the old
+configuration and are unaffected, since none of them concerns startup.
 
 ### Re-running this plan
 

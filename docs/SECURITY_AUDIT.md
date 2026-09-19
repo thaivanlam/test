@@ -388,6 +388,15 @@ password appears anywhere in this file.
   the signing key to a randomly generated value supplied by the environment.
   Rotation is required because the previous value must be treated as public.
 - **Note:** Left untouched deliberately, so the finding remains demonstrable.
+- **Tier 3B update — partial, not a fix.** Commit `ae29359` removed the signing
+  key from `docker-compose.yml`, so the "also hardcoded in
+  `docker-compose.yml:24`" in the reason above no longer holds: Compose now
+  reads `JWT_SECRET` from the environment and refuses to start without it. The
+  core of this finding is unchanged. `.env` is still tracked by Git and still
+  holds the signing key, the key has not been rotated, and the Postgres password
+  is still written in `docker-compose.yml`. The same commit also **added** a
+  `REDIS_PASSWORD` local-development placeholder to the tracked `.env`, so the
+  set of committed credentials grew by one. The status stays `Open — static`.
 
 ### SEC-09 — Token type not validated
 
@@ -809,6 +818,24 @@ authentication findings — SEC-09, SEC-11 and SEC-12 — were reproduced by the
 manual test plan and now carry recorded runtime output. The remaining counts are
 13 static, 1 suspected, 4 reproduced and 5 fixed.
 
+### State after Tier 3B
+
+Tier 3B changed infrastructure only; no application finding changed status.
+The counts above still stand.
+
+| Change | Commit | Evidence |
+|---|---|---|
+| Postgres and Redis healthchecks; backend waits for `service_healthy` | `8517b7d` | On a fresh volume the old config left the backend `Exited (1)` with `ConnectionRefusedError`; after the fix, three fresh-volume boots all started it cleanly. With an existing volume the old config had succeeded three times out of three — the race depends on how quickly Postgres comes up. |
+| `.dockerignore` for backend and frontend | `7aea7f2` | `test.db` and `.pytest_cache` no longer in the backend image. Image sizes unchanged. |
+| Frontend served by `nginx:alpine` | `63238f5` | 218MB to 94.4MB; status and Content-Type of six paths identical before and after. |
+| Redis requires a password and is bound to `127.0.0.1` | `ae29359` | Unauthenticated and wrong-password connections fail with `AuthenticationError`; the backend connects through its `REDIS_URL`. |
+| `JWT_SECRET` no longer written in `docker-compose.yml` | `ae29359` | Read from the environment; Compose refuses to start without it. No secret appears in any image layer. |
+
+This resolves the cold-boot failure recorded above under Tier 1 as an
+observation. It does **not** resolve SEC-08, which stays `Open — static`: `.env`
+is still tracked by Git and still holds the signing key, and the Postgres
+password remains in the compose file. See the Tier 3B update under SEC-08.
+
 ---
 
 ## Test evidence
@@ -902,3 +929,4 @@ recorded above as reproduced.
 | 2026-09-19 | Initial audit. 23 findings recorded from static analysis; none reproduced at runtime. |
 | 2026-09-19 | Tier 1 close. SEC-01 (`1e6984c`), SEC-02 (`b6089e4`), SEC-03 (`6a9ce9f`), SEC-07 (`ff7ce08`) and SEC-04 (`9957174`) marked `Fixed`, each with a regression test that failed before the change and passed after it. SEC-23 promoted from `Open — suspected` to `Reproduced` on observed runtime output, with its impact stated precisely and left unfixed. SEC-07 annotated with a known side effect and with a correction narrowing its original scope. Counts updated: 5 fixed, 1 reproduced, 1 suspected, 16 static. |
 | 2026-09-19 | Tier 2 close. No finding fixed. SEC-09, SEC-11 and SEC-12 promoted from `Open — static` to `Reproduced` on runtime output from `docs/TEST_PLAN.md` (TC-07; TC-02 and TC-03; TC-08 and TC-09). SEC-12 is reproduced for its logout half only; its refresh half was not exercised and stays static. SEC-12's reason corrected: since SEC-01 was fixed, a token survives logout until natural expiry, not indefinitely. SEC-03 given additional end-to-end evidence from the Playwright isolation test, status unchanged. Test evidence section added, recording 20 backend tests and 3 Playwright tests as run at `9a22c2f`. Counts updated: 5 fixed, 4 reproduced, 1 suspected, 13 static. |
+| 2026-09-19 | Tier 3B checkpoint. Infrastructure changes recorded: healthchecks and readiness-gated startup (`8517b7d`), `.dockerignore` (`7aea7f2`), nginx frontend (`63238f5`), Redis password with loopback binding and `JWT_SECRET` read from the environment (`ae29359`). The Tier 1 cold-boot observation is marked resolved. SEC-08 annotated as partially improved but **not fixed**, with its now-outdated reference to a hardcoded key in `docker-compose.yml` corrected; status unchanged at `Open — static`. No finding changed status. |
