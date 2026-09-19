@@ -120,3 +120,84 @@ async def test_get_single_todo(client: AsyncClient):
     assert response.status_code == 200
     data = response.json()
     assert data["title"] == "Single Todo"
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_read_another_users_todo(client: AsyncClient):
+    """User B must not be able to read a todo owned by user A.
+
+    404 rather than 403 is expected: answering 403 would confirm that the id
+    exists, which tells an unauthorised caller something about another user's
+    data.
+    """
+    token_a = await get_auth_token(client, "owner-read@example.com")
+    token_b = await get_auth_token(client, "intruder-read@example.com")
+
+    create_response = await client.post(
+        "/api/v1/todos",
+        json={"title": "Private to A", "description": "not for B"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    todo_id = create_response.json()["id"]
+
+    response = await client.get(
+        f"/api/v1/todos/{todo_id}",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_update_another_users_todo(client: AsyncClient):
+    """User B must not be able to update a todo owned by user A."""
+    token_a = await get_auth_token(client, "owner-update@example.com")
+    token_b = await get_auth_token(client, "intruder-update@example.com")
+
+    create_response = await client.post(
+        "/api/v1/todos",
+        json={"title": "Owned by A", "description": "original"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    todo_id = create_response.json()["id"]
+
+    response = await client.put(
+        f"/api/v1/todos/{todo_id}",
+        json={"title": "Hijacked by B"},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert response.status_code == 404
+
+    # The rejection must also mean nothing was written.
+    owner_view = await client.get(
+        f"/api/v1/todos/{todo_id}",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert owner_view.status_code == 200
+    assert owner_view.json()["title"] == "Owned by A"
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_delete_another_users_todo(client: AsyncClient):
+    """User B must not be able to delete a todo owned by user A."""
+    token_a = await get_auth_token(client, "owner-delete@example.com")
+    token_b = await get_auth_token(client, "intruder-delete@example.com")
+
+    create_response = await client.post(
+        "/api/v1/todos",
+        json={"title": "Do not delete", "description": "belongs to A"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    todo_id = create_response.json()["id"]
+
+    response = await client.delete(
+        f"/api/v1/todos/{todo_id}",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert response.status_code == 404
+
+    # The todo must still be there for its owner.
+    owner_view = await client.get(
+        f"/api/v1/todos/{todo_id}",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert owner_view.status_code == 200

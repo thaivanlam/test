@@ -39,8 +39,17 @@ async def get_todos(
     return todos, total.scalar_one()
 
 
-async def get_todo_by_id(db: AsyncSession, todo_id: uuid.UUID) -> Todo | None:
-    result = await db.execute(select(Todo).where(Todo.id == todo_id))
+async def get_todo_by_id(
+    db: AsyncSession, todo_id: uuid.UUID, user_id: uuid.UUID
+) -> Todo | None:
+    """Get a todo by id, scoped to its owner.
+
+    user_id is required rather than optional so that a caller cannot fetch a
+    todo without stating whose it should be.
+    """
+    result = await db.execute(
+        select(Todo).where(Todo.id == todo_id, Todo.user_id == user_id)
+    )
     return result.scalar_one_or_none()
 
 
