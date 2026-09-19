@@ -1,10 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * These tests run against an already-running stack. They deliberately do not
- * start one: `docker compose up` does not wait for Postgres to be ready, so the
- * backend exits on a cold boot and a `webServer` block here would make every
- * run depend on that race. Bring the stack up first, then run the suite.
+ * These tests run against an already-running stack, and deliberately have no
+ * `webServer` block to start one. The workflow is to bring the whole Compose
+ * stack up first and confirm it is healthy, then run the suite. Keeping
+ * startup out of Playwright means a test run never depends on how long the
+ * stack takes to come up, and every run sees the same environment.
  *
  *   docker compose up -d
  *   cd e2e && npm test
