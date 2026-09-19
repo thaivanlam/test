@@ -34,7 +34,9 @@ async def list_todos(
     """Get paginated list of todos."""
     skip = (page - 1) * size
 
-    cache_key = "todos:list"
+    # Scoped to the caller and to the query: a shared key served one user's
+    # todos to every other user, and one page's results for every page.
+    cache_key = f"todos:list:{current_user.id}:{page}:{size}"
 
     # Try to get from cache
     cached = await redis.get(cache_key)

@@ -201,3 +201,78 @@ async def test_user_cannot_delete_another_users_todo(client: AsyncClient):
         headers={"Authorization": f"Bearer {token_a}"},
     )
     assert owner_view.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_todo_list_cache_is_not_shared_between_users(client: AsyncClient):
+    """User B's list must not be served from a cache entry populated by user A.
+
+    The assertions look at the data in the response rather than at the cache
+    key, so the test describes the behaviour that matters and not the
+    implementation that happens to provide it.
+    """
+    token_a = await get_auth_token(client, "cache-a@example.com")
+    token_b = await get_auth_token(client, "cache-b@example.com")
+
+    await client.post(
+        "/api/v1/todos",
+        json={"title": "Belongs to A"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    await client.post(
+        "/api/v1/todos",
+        json={"title": "Belongs to B"},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+
+    # A reads first, which is what populates the cache.
+    list_a = await client.get(
+        "/api/v1/todos",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert list_a.status_code == 200
+    assert [item["title"] for item in list_a.json()["items"]] == ["Belongs to A"]
+
+    list_b = await client.get(
+        "/api/v1/todos",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert list_b.status_code == 200
+    titles_b = [item["title"] for item in list_b.json()["items"]]
+    assert titles_b == ["Belongs to B"]
+    assert "Belongs to A" not in titles_b
+
+
+@pytest.mark.asyncio
+async def test_todo_list_cache_distinguishes_pagination(client: AsyncClient):
+    """A cached page must not be served for a different page of the same user.
+
+    Three todos with a page size of two means page 1 holds two items and page 2
+    holds one, so a cache entry shared between the two pages is visible in the
+    item count alone.
+    """
+    token = await get_auth_token(client, "cache-page@example.com")
+
+    for index in range(3):
+        await client.post(
+            "/api/v1/todos",
+            json={"title": f"Paged todo {index}"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    page_1 = await client.get(
+        "/api/v1/todos",
+        params={"page": 1, "size": 2},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert page_1.status_code == 200
+    assert len(page_1.json()["items"]) == 2
+
+    page_2 = await client.get(
+        "/api/v1/todos",
+        params={"page": 2, "size": 2},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert page_2.status_code == 200
+    assert len(page_2.json()["items"]) == 1
+    assert page_2.json()["page"] == 2
