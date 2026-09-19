@@ -21,8 +21,19 @@ services:
 
   redis:
     image: redis:7
+    # The password comes from the environment (.env), never from this file.
+    # sh expands it at run time, so the command stored for the container
+    # carries the variable name rather than its value.
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      # Read by redis-cli, so the healthcheck can authenticate without the
+      # password appearing in its command line.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     ports:
-      - "6379:6379"
+      # Loopback only: reachable from this machine for debugging, not from the
+      # network. Other containers reach it by service name.
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,8 +48,10 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://fabbi:fabbi_secret@postgres:5432/postgres
-      REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: super-secret-key-change-in-production
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
+      # Read from the environment (.env) rather than written here. Compose
+      # refuses to start if it is unset.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 30
       REFRESH_TOKEN_EXPIRE_DAYS: 7
