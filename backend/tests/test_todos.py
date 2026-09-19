@@ -79,6 +79,41 @@ async def test_update_todo(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_completed_can_be_set_back_to_false(client: AsyncClient):
+    """A completed todo can be marked incomplete again, and that is stored.
+
+    The update has to tell "completed was not sent" (None) apart from
+    "completed was sent as false". A truthiness check treats the two alike,
+    so false was silently ignored.
+    """
+    token = await get_auth_token(client, "toggle-back@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_response = await client.post(
+        "/api/v1/todos", json={"title": "Toggle me"}, headers=headers
+    )
+    todo_id = create_response.json()["id"]
+
+    done = await client.put(
+        f"/api/v1/todos/{todo_id}", json={"completed": True}, headers=headers
+    )
+    assert done.status_code == 200
+    assert done.json()["completed"] is True
+
+    undone = await client.put(
+        f"/api/v1/todos/{todo_id}", json={"completed": False}, headers=headers
+    )
+    assert undone.status_code == 200
+    assert undone.json()["completed"] is False
+
+    # Read it back, so the assertion is about what was stored rather than
+    # only about the response to the update.
+    fetched = await client.get(f"/api/v1/todos/{todo_id}", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["completed"] is False
+
+
+@pytest.mark.asyncio
 async def test_delete_todo(client: AsyncClient):
     """Test deleting a todo."""
     token = await get_auth_token(client, "delete@example.com")
