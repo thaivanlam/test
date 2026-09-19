@@ -33,6 +33,10 @@ class TagUpdate(BaseModel):
         return value
 
 
+class TodoTagAttach(BaseModel):
+    tag_id: uuid.UUID
+
+
 class TagResponse(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID

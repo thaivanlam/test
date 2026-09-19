@@ -9,7 +9,9 @@ from app.api.deps import get_current_user, get_redis
 from app.core.redis import RedisClient
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.tag import TodoTagAttach
 from app.schemas.todo import TodoCreate, TodoListResponse, TodoResponse, TodoUpdate
+from app.services.tag_service import attach_tag, detach_tag, get_tag_by_id
 from app.services.todo_service import (
     create_todo,
     delete_todo,
@@ -174,4 +176,59 @@ async def delete_existing_todo(
     await delete_todo(db, todo)
     await invalidate_todo_list_cache(redis, current_user.id)
 
+    return None
+
+
+async def ensure_own_todo_and_tag(
+    db: AsyncSession, todo_id: uuid.UUID, tag_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
+    """404 unless both the todo and the tag belong to user_id.
+
+    Both lookups carry the owner in their WHERE clause, so another user's todo
+    or tag is treated exactly like one that does not exist. Checking the tag
+    as well as the todo is what stops a user attaching someone else's tag to
+    their own todo.
+    """
+    if not await get_todo_by_id(db, todo_id, user_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Todo not found",
+        )
+    if not await get_tag_by_id(db, tag_id, user_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tag not found",
+        )
+
+
+# Attach and detach both answer 204 whether or not the link already existed:
+# the outcome the client asked for holds either way, so repeating a request
+# is safe and gives the same answer.
+@router.post("/{todo_id}/tags", status_code=status.HTTP_204_NO_CONTENT)
+async def attach_tag_to_todo(
+    todo_id: uuid.UUID,
+    body: TodoTagAttach,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
+):
+    """Attach one of the user's tags to one of their todos."""
+    await ensure_own_todo_and_tag(db, todo_id, body.tag_id, current_user.id)
+    await attach_tag(db, todo_id, body.tag_id)
+    await invalidate_todo_list_cache(redis, current_user.id)
+    return None
+
+
+@router.delete("/{todo_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def detach_tag_from_todo(
+    todo_id: uuid.UUID,
+    tag_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
+):
+    """Detach a tag from a todo. Both must belong to the user."""
+    await ensure_own_todo_and_tag(db, todo_id, tag_id, current_user.id)
+    await detach_tag(db, todo_id, tag_id)
+    await invalidate_todo_list_cache(redis, current_user.id)
     return None

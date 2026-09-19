@@ -1,11 +1,12 @@
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.tag import Tag
+from app.models.tag import Tag, todo_tags
 from app.schemas.tag import TagCreate
 
 DUPLICATE_TAG_DETAIL = "Tag with this name already exists"
@@ -76,3 +77,35 @@ async def delete_tag(db: AsyncSession, tag: Tag) -> None:
     # themselves are untouched.
     await db.delete(tag)
     await db.flush()
+
+
+async def attach_tag(db: AsyncSession, todo_id: uuid.UUID, tag_id: uuid.UUID) -> None:
+    """Link a tag to a todo; linking it again is a no-op.
+
+    The caller must already have checked that both belong to the current user.
+
+    ON CONFLICT DO NOTHING against the (todo_id, tag_id) primary key, rather
+    than a SELECT first: two concurrent attaches would both see no row and one
+    would fail on the key. Postgres and SQLite (the test database) both support
+    the clause but SQLAlchemy exposes it per dialect, hence the switch.
+    """
+    dialect = db.get_bind().dialect.name
+    insert = postgresql.insert if dialect == "postgresql" else sqlite.insert
+    await db.execute(
+        insert(todo_tags)
+        .values(todo_id=todo_id, tag_id=tag_id)
+        .on_conflict_do_nothing(index_elements=["todo_id", "tag_id"])
+    )
+
+
+async def detach_tag(db: AsyncSession, todo_id: uuid.UUID, tag_id: uuid.UUID) -> None:
+    """Unlink a tag from a todo; unlinking one that is not linked is a no-op.
+
+    The caller must already have checked that both belong to the current user.
+    The DELETE names both ids, so it can only ever remove that one link.
+    """
+    await db.execute(
+        delete(todo_tags).where(
+            todo_tags.c.todo_id == todo_id, todo_tags.c.tag_id == tag_id
+        )
+    )
