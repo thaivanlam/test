@@ -42,6 +42,7 @@ Consequences for how this document must be read:
 | `Open — suspected` | Possible defect. Source analysis is not sufficient to establish it; runtime verification is required before it is claimed as a bug. |
 | `Reproduced` | Demonstrated by an executed test or command whose output is recorded in this document, but not yet fixed. |
 | `Fixed` | Defect corrected, with a regression test that fails before the fix and passes after it. |
+| `Fixed — no fail-first test` | Added in Tier 4. Defect corrected, and the corrected behaviour checked after the change, but no committed test has been recorded failing against the unfixed code. The finding's section says exactly what evidence exists. Kept apart from `Fixed` so that the stronger claim is not made where its evidence is missing. |
 
 ### Verification plan
 
@@ -60,6 +61,14 @@ to `Reproduced`, not `Fixed`.
 Of the fourteen findings not yet demonstrated, thirteen are `Open — static`
 and one is `Open — suspected`: read, reasoned about, and not run. They are
 reported rather than claimed.
+
+Tier 4 fixed seven more. Three — SEC-05, SEC-06 and SEC-13 — meet the
+`Fixed` bar: their regression tests were run against the code as it stood
+before each fix and recorded failing. The other four — SEC-14, SEC-16, SEC-17
+and SEC-19 — are corrected in code and checked afterwards, but have no
+recorded fail-first run of a committed test, so they carry the weaker status
+`Fixed — no fail-first test`. The paragraphs above describe Tiers 1 and 2 as
+they were and are left unchanged.
 
 ### A note on credentials
 
@@ -88,10 +97,11 @@ password appears anywhere in this file.
 
 | Status | Count |
 |---|---|
-| `Open — static` | 13 |
+| `Open — static` | 6 |
 | `Open — suspected` | 1 |
 | `Reproduced` | 4 |
-| `Fixed` | 5 |
+| `Fixed` | 8 |
+| `Fixed — no fail-first test` | 4 |
 
 ### Index
 
@@ -101,21 +111,21 @@ password appears anywhere in this file.
 | SEC-02 | Critical | AuthZ | IDOR: any user can read/update/delete another user's todo | `Fixed` (`b6089e4`) |
 | SEC-03 | Critical | Cache | Global cache key leaks todos across users | `Fixed` (`6a9ce9f`) |
 | SEC-04 | High | Cache | No cache invalidation on create/update/delete | `Fixed` (`9957174`) |
-| SEC-05 | High | Logic | `completed` cannot be toggled back to `false` | `Open — static` |
-| SEC-06 | High | Logic | Partial update erases `description` | `Open — static` |
+| SEC-05 | High | Logic | `completed` cannot be toggled back to `false` | `Fixed` (`2e63ab5`) |
+| SEC-06 | High | Logic | Partial update erases `description` | `Fixed` (`f21ec44`) |
 | SEC-07 | High | Frontend | Logout does not clear the query cache | `Fixed` (`ff7ce08`) |
 | SEC-08 | High | Secrets | `.env` is tracked by Git and contains a signing key | `Open — static` |
 | SEC-09 | High | Auth | Token type not validated; refresh token usable as access token | `Reproduced` |
 | SEC-10 | Medium | Database | `users.email` has no unique constraint | `Open — static` |
 | SEC-11 | Medium | Auth | User enumeration via distinct login error responses | `Reproduced` |
 | SEC-12 | Medium | Auth | Logout is a no-op; no token revocation; refresh does not re-check user | `Reproduced` (logout half) |
-| SEC-13 | Medium | Database | Pagination without `ORDER BY` | `Open — static` |
-| SEC-14 | Medium | Performance | N+1 query in todo listing | `Open — static` |
+| SEC-13 | Medium | Database | Pagination without `ORDER BY` | `Fixed` (`de419ef`) |
+| SEC-14 | Medium | Performance | N+1 query in todo listing | `Fixed — no fail-first test` (`de419ef`) |
 | SEC-15 | Medium | Security | CORS wildcard origin combined with credentials | `Open — static` |
-| SEC-16 | Medium | Frontend | Optimistic update never rolled back on error | `Open — static` |
-| SEC-17 | Medium | Frontend | Query key omits pagination parameters; page size default 10000 | `Open — static` |
+| SEC-16 | Medium | Frontend | Optimistic update never rolled back on error | `Fixed — no fail-first test` (`612c9be`) |
+| SEC-17 | Medium | Frontend | Query key omits pagination parameters; page size default 10000 | `Fixed — no fail-first test` (`612c9be`) |
 | SEC-18 | Medium | Frontend | Refresh token stored but never used | `Open — static` |
-| SEC-19 | Medium | Frontend | List rendered with array index as React key | `Open — static` |
+| SEC-19 | Medium | Frontend | List rendered with array index as React key | `Fixed — no fail-first test` (`612c9be`) |
 | SEC-20 | Low | Validation | No password policy on the backend | `Open — static` |
 | SEC-21 | Low | Config | SQL echo enabled by default | `Open — static` |
 | SEC-22 | Low | Frontend | Route guard checks only for token presence | `Open — suspected` |
@@ -280,7 +290,7 @@ password appears anywhere in this file.
 
 - **Severity:** High
 - **Location:** `backend/app/api/v1/todos.py:123-124`
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `2e63ab5` (Tier 4)
 - **Reason:** The guard `if todo_data.completed:` tests truthiness rather than
   `is not None`. When a client sends `completed: false` the condition is falsy
   and the assignment is skipped, so a completed todo can never be marked
@@ -294,12 +304,23 @@ password appears anywhere in this file.
   then `PUT {"completed": false}`. The response is expected to report `200` while
   the stored value remains `true`.
 - **Proposed Fix:** `if todo_data.completed is not None:`.
+- **Reproduction (executed, Tier 4):** `test_completed_can_be_set_back_to_false`
+  was run against the code at `5ba4bdb`, the commit before the fix, and failed
+  with `assert True is False`: after `PUT {"completed": false}` the todo was
+  still completed.
+- **Fix applied:** the guard became `if todo_data.completed is not None:`
+  (`backend/app/api/v1/todos.py:212` at `612c9be`), so `false` is applied like
+  any other value the client sends.
+- **Verification:** the test passes after the fix and in every later suite run
+  (118 passing at `612c9be`). The Playwright test `SEC-05: a todo can be
+  completed and then made active again` covers the same path through the UI,
+  each step confirmed after a reload.
 
 ### SEC-06 — Partial update erases `description`
 
 - **Severity:** High
 - **Location:** `backend/app/api/v1/todos.py:121`, `:129-130`
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `f21ec44` (Tier 4)
 - **Reason:** `model_dump()` is called without `exclude_unset=True`, so fields the
   client omitted are still present in the resulting dict with a value of `None`.
   The guard `if "description" in update_data` is therefore always true, and
@@ -317,6 +338,18 @@ password appears anywhere in this file.
   then `PUT {"title": "..."}` alone; `description` is expected to become `null`.
 - **Proposed Fix:** Use `todo_data.model_dump(exclude_unset=True)` and pass the
   resulting dict to `update_todo()`, removing the manual assignment block.
+- **Reproduction (executed, Tier 4):** the two tests added with the fix were run
+  against the code at `2e63ab5`, the commit before it.
+  `test_partial_update_keeps_description` failed with
+  `assert None == 'important details'`. `test_description_can_be_cleared_explicitly`
+  passed, as it should: an explicit `null` already cleared the field, and the
+  test guards that the fix does not take that away.
+- **Fix applied:** `model_dump(exclude_unset=True)`
+  (`backend/app/api/v1/todos.py:208` at `612c9be`), so an omitted field is
+  absent from the update rather than present as `None`. The manual assignment
+  block was kept, not moved into `update_todo()` as proposed above; it now
+  reads only fields the client sent.
+- **Verification:** both tests pass after the fix and in every later suite run.
 
 ### SEC-07 — Logout does not clear the query cache
 
@@ -526,7 +559,7 @@ password appears anywhere in this file.
 
 - **Severity:** Medium
 - **Location:** `backend/app/services/todo_service.py:31`
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `de419ef` (Tier 4)
 - **Reason:** The paginated query applies `.offset()` and `.limit()` with no
   ordering. PostgreSQL does not guarantee row order in the absence of `ORDER BY`,
   so successive page requests can return overlapping or missing rows. Tier 4 of
@@ -550,12 +583,27 @@ password appears anywhere in this file.
   ordered, `LIMIT`-ed query that results is exactly the case where the
   composite index was measured to win (0.131 ms against 0.416 ms), and the
   choice of index should be revisited. See `docs/DB_PERFORMANCE.md` §6.
+- **Tier 4 update — fixed.** Tier 4 required the ordering, so the finding was
+  fixed there.
+  - **Reproduction (executed):** `test_ordering_is_created_at_desc_then_id_desc`,
+    which gives four todos the same `created_at` and checks they come back by
+    `id` descending between a newer and an older one, was run against the code
+    at `39998fc`, the commit before the fix, and failed on the order of ids.
+  - **Fix applied:** `.order_by(Todo.created_at.desc(), Todo.id.desc())`
+    (`backend/app/services/todo_service.py:156` at `612c9be`). `id` makes the
+    order total, so rows cannot move between pages from one request to the next.
+  - **Index.** Tier 4 also replaced `ix_todos_user_id` with a composite
+    `(user_id, completed, created_at)` (`d982c8c`, migration `000a81696068`). On
+    the development database the status-filtered list query now runs as a
+    backward index scan with only an incremental sort on `id`. The Tier 3C
+    measurements in `docs/DB_PERFORMANCE.md` describe the earlier index and were
+    not re-run.
 
 ### SEC-14 — N+1 query in todo listing
 
 - **Severity:** Medium
 - **Location:** `backend/app/api/v1/todos.py:47-62`
-- **Status:** `Open — static`
+- **Status:** `Fixed — no fail-first test` — corrected in `de419ef` (Tier 4)
 - **Reason:** The response-building loop issues a separate `SELECT` against
   `users` for every todo, although all todos in the list belong to the
   authenticated caller, whose email is already available as `current_user.email`.
@@ -571,6 +619,16 @@ password appears anywhere in this file.
   default, SEC-21), call `GET /todos` against a seeded account and count
   `SELECT users` statements in the container log.
 - **Proposed Fix:** Remove the loop query and use `user_email=current_user.email`.
+- **Tier 4 update — fixed, without a regression test.**
+  - **Fix applied:** the per-todo `SELECT` against `users` was removed; every
+    item takes `current_user.email` (`backend/app/api/v1/todos.py:114` at
+    `612c9be`). Tags are loaded with one `selectinload` query, not per todo.
+  - **Evidence:** a one-off measurement, not committed, counted SQL statements
+    during one `GET /todos` returning five todos. At `39998fc`, before the fix:
+    8 statements, 6 of them `FROM users` (one for authentication, one per todo).
+    At `de419ef`, after it: 4 statements, 1 of them `FROM users`.
+  - **Why not `Fixed`:** no committed test asserts the number of queries, so
+    nothing in the suite would catch the loop being reintroduced.
 
 ### SEC-15 — CORS wildcard origin combined with credentials
 
@@ -597,7 +655,7 @@ password appears anywhere in this file.
 
 - **Severity:** Medium
 - **Location:** `frontend/src/features/todos/api/todos.ts:95-97`
-- **Status:** `Open — static`
+- **Status:** `Fixed — no fail-first test` — corrected in `612c9be` (Tier 4)
 - **Reason:** `onMutate` snapshots the previous list and returns it as mutation
   context, following the standard optimistic-update pattern, but `onError` never
   restores it. On failure the UI retains the optimistic state. `onSettled`
@@ -615,12 +673,25 @@ password appears anywhere in this file.
   checkbox is expected to retain the optimistic state despite the error toast.
 - **Proposed Fix:** Accept the context argument in `onError` and restore it with
   `queryClient.setQueryData(["todos"], context.previousTodos)`.
+- **Tier 4 update — fixed; regression test passes, fail-first not recorded.**
+  - **Fix applied:** `onMutate` now snapshots and updates every cached todo list
+    (any page, any filters), and `onError` restores each snapshot
+    (`frontend/src/features/todos/api/todos.ts:127-128` at `612c9be`).
+  - **Evidence:** the Playwright test `SEC-16: a failed toggle is rolled back`
+    forces the update to fail while holding back the refetch that follows, so
+    the checkbox can only return to unchecked through the rollback. It passes.
+    Run against a dev server built from the fixed source with the rollback
+    lines removed, it failed with `Expected: not checked, Received: checked`.
+  - **Why not `Fixed`:** that failing run was against a deliberately broken copy
+    of the new code, not against the code before `612c9be`. The pre-fix
+    frontend cannot load a list from the current API at all (it requests
+    `size=10000`, now rejected), so the test was never run against it.
 
 ### SEC-17 — Query key omits pagination parameters
 
 - **Severity:** Medium
 - **Location:** `frontend/src/features/todos/api/todos.ts:35-45`
-- **Status:** `Open — static`
+- **Status:** `Fixed — no fail-first test` — corrected in `612c9be` (Tier 4)
 - **Reason:** Two defects in one hook. The query key is the bare `["todos"]`
   although `page` and `size` are sent with the request, so every page shares one
   cache entry and navigating between pages reads the wrong data; Tier 4 of the
@@ -638,6 +709,23 @@ password appears anywhere in this file.
 - **Proposed Fix:** Use `queryKey: ["todos", { page, size }]`, reduce the default
   page size, and include the user identifier in the key to prevent cross-session
   reuse (see SEC-07).
+- **Tier 4 update — fixed; regression tests pass, fail-first not recorded.**
+  - **Fix applied:** the list query key is
+    `["todos", "list", {page, page_size, status, tag_id, keyword, date_from, date_to}]`,
+    built from one normalized object that is also the request's params
+    (`frontend/src/features/todos/api/todos.ts:56`,
+    `frontend/src/features/todos/api/queryKeys.ts`). The default page size is 20
+    and the client never asks for more than 100; the API rejects more than 100
+    since `de419ef`. No `10000` remains in `frontend/src`.
+  - **Evidence:** 18 Vitest tests on the key (a different key for each changed
+    parameter, the same key for equivalent input). The Playwright pagination
+    test pages through 23 todos and checks that every list request carries
+    `page` and `page_size ≤ 100` and none carries `size`.
+  - **Not done from the proposed fix:** the user identifier is not in the key.
+    Cross-session reuse is prevented by `queryClient.clear()` on logout
+    (SEC-07), which the Tier 4 logout isolation test exercises.
+  - **Why not `Fixed`:** none of these tests was run against the pre-fix hook,
+    which had no key helper to test.
 
 ### SEC-18 — Refresh token stored but never used
 
@@ -670,7 +758,7 @@ password appears anywhere in this file.
 
 - **Severity:** Medium
 - **Location:** `frontend/src/features/todos/components/TodoList.tsx:42`
-- **Status:** `Open — static`
+- **Status:** `Fixed — no fail-first test` — corrected in `612c9be` (Tier 4)
 - **Reason:** The list uses `key={index}` although every todo carries a stable
   UUID. React reconciles by key, so removing, inserting or reordering items
   misassigns component state — pending checkbox state, focus and transitions
@@ -685,6 +773,11 @@ password appears anywhere in this file.
 - **Reproduction (not yet executed):** Create several todos and delete the first;
   observe row state before the refetch completes.
 - **Proposed Fix:** Use `key={todo.id}` and drop the unused `index` prop.
+- **Tier 4 update — fixed, without a regression test.** The list is keyed by
+  `todo.id` (`frontend/src/features/todos/components/TodoList.tsx:62` at
+  `612c9be`) and the unused `index` prop is gone from `TodoItem`. It was changed
+  because Tier 4's row selection keeps per-row state across refetches. There is
+  no test that fails on an index key, so it is not marked `Fixed`.
 
 ---
 
@@ -797,6 +890,9 @@ out; SEC-05 and SEC-06 were not reached before Tier 1 closed.
 | 6 | SEC-07 | Strongest frontend finding; satisfies the frontend requirement and is what the E2E isolation test will surface. | `Fixed` (`ff7ce08`) |
 | 7 | SEC-04 | Belongs with SEC-03; completes the cache invalidation scenario. | `Fixed` (`9957174`) |
 
+SEC-05 and SEC-06, marked "Not done" above for Tier 1, were fixed at the
+start of Tier 4 (`2e63ab5`, `f21ec44`); see "State after Tier 4" below.
+
 Two findings are reported but handled with care. SEC-08 requires
 `git rm --cached` and key rotation and should be isolated in its own commit.
 SEC-12 needs a Redis denylist to fix properly, which is a wider change than
@@ -868,6 +964,29 @@ Two findings bear directly on Tier 3 and are recorded as still open:
 After the Tier 3C migration, the backend suite passed (20) and the Playwright
 suite passed (3). The backend image was rebuilt so that the migration runs at
 startup; the previous image did not contain that revision.
+
+### State after Tier 4
+
+Seven findings changed status in Tier 4. The counts are now 8 fixed, 4 fixed
+without a fail-first test, 4 reproduced, 1 suspected and 6 static.
+
+| ID | New status | Commit | Evidence |
+|---|---|---|---|
+| SEC-05 | `Fixed` | `2e63ab5` | Regression test failed against `5ba4bdb`, passes after |
+| SEC-06 | `Fixed` | `f21ec44` | Regression test failed against `2e63ab5`, passes after |
+| SEC-13 | `Fixed` | `de419ef` | Ordering test failed against `39998fc`, passes after |
+| SEC-14 | `Fixed — no fail-first test` | `de419ef` | One-off count: 6 `users` queries for 5 todos before, 1 after; no committed test |
+| SEC-16 | `Fixed — no fail-first test` | `612c9be` | Playwright rollback test passes; fails with the rollback removed; never run on pre-fix code |
+| SEC-17 | `Fixed — no fail-first test` | `612c9be` | 18 Vitest key tests and the Playwright pagination test pass; never run on pre-fix code |
+| SEC-19 | `Fixed — no fail-first test` | `612c9be` | Code change only; no test |
+
+Still open, and not affected by Tier 4: SEC-08, SEC-10, SEC-15, SEC-18,
+SEC-20 and SEC-21 (`Open — static`), SEC-22 (`Open — suspected`), and
+SEC-09, SEC-11, SEC-12 and SEC-23 (`Reproduced`). SEC-08 in particular is
+unchanged: `.env` is still tracked by Git.
+
+Tier 4 itself — tags, filtering, pagination and bulk status — is covered by
+the suites in "Test evidence" below and in `docs/TEST_PLAN.md` §5.
 
 ---
 
@@ -953,6 +1072,24 @@ two were written but not run. Of the executed cases, eleven pass and four
 fail. The four failures are SEC-09, SEC-11 (two cases) and SEC-12, all
 recorded above as reproduced.
 
+### Tier 4
+
+Run at `612c9be` plus the Playwright spec `e2e/tests/tier4-todos.spec.ts`;
+details, commands and per-file counts are in `docs/TEST_PLAN.md` §5.
+
+| Suite | Result |
+|---|---|
+| Backend pytest | `118 passed` |
+| Frontend Vitest (new in Tier 4) | `31 passed` |
+| Playwright | `13 passed` — the three Tier 2B tests and ten Tier 4 tests; the Tier 4 spec also passed 30 of 30 under `--repeat-each=3` |
+
+The two Tier 2A scenarios recorded above as not covered — `completed` back to
+`false`, and `description` kept on a partial update — are now covered by
+backend tests, since SEC-05 and SEC-06 are fixed. The frontend now has a
+unit-test runner (Vitest), limited to plain functions. The Tier 2B scope
+limits otherwise still hold: no CI, no coverage measurement, and E2E data is
+left in the database.
+
 ---
 
 ## Change log
@@ -964,3 +1101,4 @@ recorded above as reproduced.
 | 2026-09-19 | Tier 2 close. No finding fixed. SEC-09, SEC-11 and SEC-12 promoted from `Open — static` to `Reproduced` on runtime output from `docs/TEST_PLAN.md` (TC-07; TC-02 and TC-03; TC-08 and TC-09). SEC-12 is reproduced for its logout half only; its refresh half was not exercised and stays static. SEC-12's reason corrected: since SEC-01 was fixed, a token survives logout until natural expiry, not indefinitely. SEC-03 given additional end-to-end evidence from the Playwright isolation test, status unchanged. Test evidence section added, recording 20 backend tests and 3 Playwright tests as run at `9a22c2f`. Counts updated: 5 fixed, 4 reproduced, 1 suspected, 13 static. |
 | 2026-09-19 | Tier 3B checkpoint. Infrastructure changes recorded: healthchecks and readiness-gated startup (`8517b7d`), `.dockerignore` (`7aea7f2`), nginx frontend (`63238f5`), Redis password with loopback binding and `JWT_SECRET` read from the environment (`ae29359`). The Tier 1 cold-boot observation is marked resolved. SEC-08 annotated as partially improved but **not fixed**, with its now-outdated reference to a hardcoded key in `docker-compose.yml` corrected; status unchanged at `Open — static`. No finding changed status. |
 | 2026-09-19 | Tier 3 close. Section "State after Tier 3" added, recording 3A (`a38f1bc`), 3B (`8517b7d`, `7aea7f2`, `63238f5`, `ae29359`) and 3C (`7716d12`, `3731351`; index `ix_todos_user_id` on `todos (user_id)`). SEC-13 annotated: its reference to a composite index planned for Tier 3C was outdated, since a single-column index was chosen; still **not fixed** and `Open — static`. SEC-08 still `Open — static`. No finding changed status. |
+| 2026-09-19 | Tier 4. New status `Fixed — no fail-first test` defined, for findings corrected and checked afterwards but with no committed test recorded failing on the unfixed code. SEC-05 (`2e63ab5`), SEC-06 (`f21ec44`) and SEC-13 (`de419ef`) marked `Fixed`, each on a regression test run against the pre-fix commit and recorded failing. SEC-14 (`de419ef`), SEC-16, SEC-17 and SEC-19 (`612c9be`) marked `Fixed — no fail-first test`, each section stating what evidence exists. SEC-19 was fixed as part of the frontend work, not as a targeted fix. Tier 4 test evidence added. Counts updated: 8 fixed, 4 fixed without a fail-first test, 4 reproduced, 1 suspected, 6 static. SEC-08 unchanged at `Open — static`. |

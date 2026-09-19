@@ -125,3 +125,120 @@ The API rows were executed by a script that registers two throwaway accounts and
 walks the cases in order, so the plan can be repeated against a fresh database
 without manual setup. TC-16 is a manual browser run: log in as one user, log
 out, log in as another in the same tab, and read the header and the list.
+
+---
+
+## 5. Tier 4 — automated coverage (tags, filtering, pagination, bulk status)
+
+Added after Tier 4 was implemented. Sections 1–4 above are the Tier 2C manual
+plan and are left exactly as executed at `23db3f6`; in particular the remark
+that the repository had no frontend test runner was true then and is
+superseded, not corrected, by §5.2.
+
+**Implementation commits:** `2e63ab5` (SEC-05), `f21ec44` (SEC-06), `d982c8c`
+(schema), `8ce1a27` (tag CRUD), `39998fc` (attach/detach), `de419ef`
+(filtering, pagination, ordering, tags in responses), `86ac5a7` (bulk status),
+`612c9be` (frontend).
+**Suites executed at:** `612c9be`, plus the E2E spec added with this section.
+**Date:** 2026-09-19.
+
+### 5.1 Backend — pytest
+
+`118 passed`, run with the current source mounted into the backend container:
+
+```bash
+MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \
+  -v "D:/Project/Fabbi_Developer_Assessment/backend:/app" backend pytest tests/ -q
+```
+
+| File | Tests | What it covers |
+|---|---|---|
+| `test_tags.py` | 23 | Tag CRUD; per-user ownership (another user's tag is `404` on get, update and delete); case-insensitive duplicate names `409`, enforced by the unique index, with the failed insert rolled back; validation `422`; deleting a tag cascades its `todo_tags` rows and keeps the todos |
+| `test_todo_tags.py` | 14 | Attach and detach, both idempotent (`204` on repeat); another user's todo or tag `404`; the `todo_tags` rows checked in the database; list cache invalidated for the caller only |
+| `test_todo_filters.py` | 36 | `status`; `tag_id` (another user's tag `404`); keyword on title and description, case-insensitive, `%` and `_` matched literally; `date_from` / `date_to` as inclusive UTC days; combined filters; `422` on invalid parameters; `created_at DESC, id DESC` ordering; `page` / `page_size` (≤ 100, `size` kept as an alias); `total` and `pages` computed under the filters; tags in every todo response; cache keys per filter set, shared by equivalent queries, isolated per user; tag rename, tag delete, attach and detach refresh the cached list |
+| `test_todo_bulk_status.py` | 22 | `PATCH /todos/bulk-status` in both directions; duplicate ids applied once; ten malformed payloads `422`; a missing id or another user's id `404` with **no** row changed (state read from the database, including `updated_at`); the caller's cached lists cleared, other users' kept, nothing cleared on failure |
+| `test_todos.py` | 18 | Tier 1–3 tests, plus three added for SEC-05 and SEC-06: `test_completed_can_be_set_back_to_false`, `test_partial_update_keeps_description`, `test_description_can_be_cleared_explicitly` |
+| `test_auth.py` | 5 | Unchanged since Tier 1 |
+
+The suite runs on SQLite and the in-memory `FakeRedis`. Since `8ce1a27` the
+SQLite connection enables `PRAGMA foreign_keys=ON`, without which the cascade
+tests could not fail. Postgres-specific paths — `ON CONFLICT DO NOTHING` on
+attach, `SELECT … FOR UPDATE` in the bulk update, `ILIKE … ESCAPE` — were each
+run once against the development Postgres inside a rolled-back transaction;
+those runs are not part of the automated suite.
+
+### 5.2 Frontend — Vitest
+
+`31 passed` (Vitest 4.1.11, Node environment, no DOM):
+
+```bash
+cd frontend && npm test
+```
+
+| File | Tests | What it covers |
+|---|---|---|
+| `src/features/tags/schemas/tag.test.ts` | 13 | Tag name trimmed, required, blank rejected, 50 characters accepted and 51 rejected (measured after trimming); color optional or null, 21 characters rejected; an empty color sent as `null` |
+| `src/features/todos/api/queryKeys.test.ts` | 18 | The todo list query key sits under the `["todos"]` prefix; it is identical for identical filters, independent of property order and of keyword case and whitespace, and equal for defaults and omitted values; it differs when any of `page`, `page_size`, `status`, `tag_id`, `keyword`, `date_from` or `date_to` changes; `page_size` is clamped to 100 |
+
+Only plain functions are tested. There are no component tests.
+
+### 5.3 End-to-end — Playwright
+
+`13 passed` against the running stack (images rebuilt from `612c9be`, Alembic
+at head `000a81696068`): the three Tier 2B tests and ten in
+`e2e/tests/tier4-todos.spec.ts`.
+
+```bash
+cd e2e
+npx playwright test tests/tier4-todos.spec.ts   # Tier 4 only
+npx playwright test                             # full suite
+```
+
+| Test | Scenario |
+|---|---|
+| filtering | Keyword on title, on description, case-insensitive; `active`; `completed`; tag; `date_from` and `date_to` on either side of the todos' own UTC day; all filters combined; Clear filters restores every control and the full list |
+| pagination | 23 todos: page 1 of 2, Next, Previous, 10 per page (1 of 3), a filter change from page 2 returns to page 1; every list request carries `page` and `page_size ≤ 100` and none carries `size` |
+| tags — lifecycle | Create with a color, attach to a todo, rename and recolor (the todo shows the new name without a reload), detach, delete (gone from the manager and from the filter options) |
+| tags — rejected names | `Work` then `work` shows the API's `409` message; blank and 51-character names show the form's messages; only one tag exists at the end |
+| bulk — success | Two of three todos marked completed, then active again; the selection clears after each; the third is untouched; state re-read after a reload |
+| bulk — failure | One selected todo is deleted through the API before submitting; the error is shown, the selection is kept, and the other todo was **not** completed (read back from the API) |
+| SEC-05 regression | A todo is completed, then made active again, each step confirmed after a reload |
+| SEC-16 regression | The update request is forced to fail while the list refetch is held back; the checkbox returns to unchecked, which only the rollback can do |
+| isolation — tags | B's filter and attach pickers list B's own tag but not A's; the API answers B's `tag_id` filter with A's tag, and B's attach of A's tag, with `404`; A's tag and link are intact |
+| isolation — logout | A loads a todo and a tag, logs out; B registers in the same tab and sees neither |
+
+Setup data (a batch of todos, a tag attached in advance) is created through the
+API with the signed-in user's own token; the behaviour under test is driven
+through the UI. Every test registers its own user, so none depends on earlier
+data.
+
+How they were checked:
+
+- The Tier 4 spec passed 30 of 30 runs under `--repeat-each=3`.
+- The SEC-16 test was run against a Vite dev server built from source with the
+  rollback removed, and failed with `Expected: not checked, Received: checked`.
+  With the source restored, the same test on the same server passed.
+- Two existing tests were updated in `612c9be`, not weakened. Each row now has
+  a selection checkbox named `Select "<title>"`, so the completion checkbox is
+  located with `exact: true`. The cross-user absence check deliberately stays a
+  substring match, so it still excludes both kinds of checkbox.
+
+### 5.4 Temporary verification — not part of any suite
+
+While the frontend was being implemented, a throwaway Playwright script drove
+31 checks against the running stack; all passed on its final run. It was
+**never committed**. Its scenarios were converted selectively into §5.3, and it
+is not counted in any figure above.
+
+Likewise, the before-and-after N+1 measurement for SEC-14, and the fail-first
+runs for SEC-05, SEC-06 and SEC-13 recorded in `docs/SECURITY_AUDIT.md`, were
+each executed once from a scratch copy of the relevant commits and are not in
+the repository.
+
+### 5.5 Not covered
+
+- No coverage measurement exists for any suite, and none is claimed.
+- There is no CI; every run above was made by hand against a local stack.
+- There are no frontend component tests; UI behaviour is covered only through
+  Playwright.
+- The E2E tests leave their users, todos and tags in the database.

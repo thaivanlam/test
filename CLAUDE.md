@@ -58,13 +58,24 @@ cd backend && pytest tests/ -v                   # chỉ khi có venv Python 3.1
 cd e2e && npm install && npx playwright install chromium   # lần đầu
 cd e2e && npx playwright test                    # headless
 cd e2e && npx playwright test --headed           # headed
+cd e2e && npx playwright test tests/tier4-todos.spec.ts   # chỉ Tier 4
+
+# Frontend unit test (Vitest, chỉ test hàm thuần: tag schema, query key)
+cd frontend && npm ci && npm test
+cd frontend && npm run build && npm run lint     # tsc -b + vite build; eslint
 ```
 
 Sửa code backend rồi test bằng `exec` sẽ chạy code CŨ cho tới khi build lại
 image — dùng cách mount khi đang sửa code.
 
+E2E chạy vào image đang chạy, nên sau khi sửa backend/frontend phải
+`docker compose up -d --build` trước (migration chạy lúc backend khởi động).
+Tier 4 spec tạo dữ liệu nền qua API ở `API_URL` (mặc định
+`http://localhost:8000`).
+
 Test backend dùng SQLite (sqlite+aiosqlite) và `FakeRedis` (dict có trạng thái,
 giữ dữ liệu giữa các request) trong tests/conftest.py — không đụng Redis thật.
+SQLite bật `PRAGMA foreign_keys=ON` (conftest) để test được ON DELETE CASCADE.
 
 ## Quy ước commit
 
