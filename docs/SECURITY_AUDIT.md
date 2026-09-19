@@ -26,11 +26,13 @@ Consequences for how this document must be read:
   "Evidence" of each one is a direct source citation or the output of a
   read-only command (`grep`, `git ls-files`, `git check-ignore`).
 - The **"Reproduction"** field of each finding describes the steps required to
-  demonstrate the defect. **These steps were not executed during this audit.**
-  They are a plan for Tier 2, not a record of an observed run.
-- No finding in this document is marked `Reproduced`. That status is reserved
-  for findings that have been demonstrated by an actually executed test or
-  command, with its output recorded here.
+  demonstrate the defect. **They were not executed during the original audit.**
+  Where a finding has since been reproduced or fixed, its own section records
+  what was actually run and what came back. Everywhere else the field remains
+  a plan and nothing more.
+- The status column is what keeps the two apart. A finding still at
+  `Open — static` rests on reading alone; nothing is promoted past that without
+  recorded output from a command that was really executed.
 
 ### Status vocabulary
 
@@ -38,17 +40,20 @@ Consequences for how this document must be read:
 |---|---|
 | `Open — static` | Defect identified by source analysis. The code path is unambiguous, but no runtime demonstration has been performed. |
 | `Open — suspected` | Possible defect. Source analysis is not sufficient to establish it; runtime verification is required before it is claimed as a bug. |
-| `Reproduced` | Demonstrated by an executed test or command whose output is recorded in this document. **No finding currently holds this status.** |
+| `Reproduced` | Demonstrated by an executed test or command whose output is recorded in this document, but not yet fixed. |
 | `Fixed` | Defect corrected, with a regression test that fails before the fix and passes after it. |
 
 ### Verification plan
 
-Findings will be promoted from `Open — static` to `Reproduced` in Tier 2, once
-the container stack is running. Each fix is expected to follow the sequence:
-write a failing test that reproduces the defect, record the failure, apply the
-fix, record the pass. This document is to be updated as statuses change, so
-that the final state accurately distinguishes what was proven from what was
-merely read.
+Each fix follows the same sequence: write a test that reproduces the defect,
+record it failing, apply the fix, record it passing, then run the full suite
+to check for regressions. Findings are promoted only on that evidence.
+
+Tier 1 closed with five findings fixed this way — SEC-01, SEC-02, SEC-03,
+SEC-04 and SEC-07 — and one, SEC-23, observed at runtime but left alone. Of the
+seventeen that remain, sixteen are `Open — static` and one is
+`Open — suspected`: read, reasoned about, and not demonstrated. They are
+reported rather than claimed.
 
 ### A note on credentials
 
@@ -77,22 +82,22 @@ password appears anywhere in this file.
 
 | Status | Count |
 |---|---|
-| `Open — static` | 21 |
-| `Open — suspected` | 2 |
-| `Reproduced` | 0 |
-| `Fixed` | 0 |
+| `Open — static` | 16 |
+| `Open — suspected` | 1 |
+| `Reproduced` | 1 |
+| `Fixed` | 5 |
 
 ### Index
 
 | ID | Severity | Area | Summary | Status |
 |---|---|---|---|---|
-| SEC-01 | Critical | Auth | Token expiry verification disabled | `Open — static` |
-| SEC-02 | Critical | AuthZ | IDOR: any user can read/update/delete another user's todo | `Open — static` |
-| SEC-03 | Critical | Cache | Global cache key leaks todos across users | `Open — static` |
-| SEC-04 | High | Cache | No cache invalidation on create/update/delete | `Open — static` |
+| SEC-01 | Critical | Auth | Token expiry verification disabled | `Fixed` (`1e6984c`) |
+| SEC-02 | Critical | AuthZ | IDOR: any user can read/update/delete another user's todo | `Fixed` (`b6089e4`) |
+| SEC-03 | Critical | Cache | Global cache key leaks todos across users | `Fixed` (`6a9ce9f`) |
+| SEC-04 | High | Cache | No cache invalidation on create/update/delete | `Fixed` (`9957174`) |
 | SEC-05 | High | Logic | `completed` cannot be toggled back to `false` | `Open — static` |
 | SEC-06 | High | Logic | Partial update erases `description` | `Open — static` |
-| SEC-07 | High | Frontend | Logout does not clear the query cache | `Open — static` |
+| SEC-07 | High | Frontend | Logout does not clear the query cache | `Fixed` (`ff7ce08`) |
 | SEC-08 | High | Secrets | `.env` is tracked by Git and contains a signing key | `Open — static` |
 | SEC-09 | High | Auth | Token type not validated; refresh token usable as access token | `Open — static` |
 | SEC-10 | Medium | Database | `users.email` has no unique constraint | `Open — static` |
@@ -108,7 +113,7 @@ password appears anywhere in this file.
 | SEC-20 | Low | Validation | No password policy on the backend | `Open — static` |
 | SEC-21 | Low | Config | SQL echo enabled by default | `Open — static` |
 | SEC-22 | Low | Frontend | Route guard checks only for token presence | `Open — suspected` |
-| SEC-23 | Low | Dependencies | `passlib` / `bcrypt` version incompatibility | `Open — suspected` |
+| SEC-23 | Low | Dependencies | `passlib` / `bcrypt` version incompatibility | `Reproduced` |
 
 ---
 
@@ -118,7 +123,7 @@ password appears anywhere in this file.
 
 - **Severity:** Critical
 - **Location:** `backend/app/core/security.py:49-63`, `verify_token()`, specifically line 56
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `1e6984c`
 - **Reason:** `jwt.decode()` is called with `options={"verify_exp": False}`, which
   disables expiry checking entirely. Every access token is valid forever, making
   `ACCESS_TOKEN_EXPIRE_MINUTES` meaningless. A token that leaks through logs,
@@ -130,12 +135,18 @@ password appears anywhere in this file.
   52:        payload = jwt.decode(
   56:            options={"verify_exp": False},
   ```
-- **Reproduction (not yet executed):** Issue a token whose `exp` claim is in the
-  past, then call `GET /api/v1/auth/me` with it. Expected `401`; the code path
-  indicates `200` will be returned.
-- **Proposed Fix:** Remove the `options` argument so the library's default expiry
-  validation applies, and handle `ExpiredSignatureError` separately to return a
-  clear `401`.
+- **Reproduction (executed):**
+  `tests/test_auth.py::test_expired_access_token_is_rejected` registers a user,
+  confirms a fresh token is accepted, then signs a correctly formed token for
+  that same user with `exp` a minute in the past and calls
+  `GET /api/v1/auth/me`. The user genuinely exists, so expiry is the only
+  possible reason to reject it. Before the fix the test failed on
+  `assert 200 == 401`.
+- **Fix applied:** Removed the `options` argument so the library's default
+  expiry validation applies. One line of production code; the authentication
+  architecture is otherwise untouched.
+- **Verification:** The regression test passes afterwards, and the backend suite
+  went from 9 passing to 10 with nothing regressed.
 
 ### SEC-02 — IDOR: any user can read, update or delete another user's todo
 
@@ -143,7 +154,7 @@ password appears anywhere in this file.
 - **Location:** `backend/app/api/v1/todos.py:88-102` (`get_todo`), `:105-134`
   (`update_existing_todo`), `:137-153` (`delete_existing_todo`);
   `backend/app/services/todo_service.py:42-44` (`get_todo_by_id`)
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `b6089e4`
 - **Reason:** `get_todo_by_id()` filters on `Todo.id` only. All three endpoints
   declare a `current_user` dependency but never compare `todo.user_id` against
   `current_user.id`. Any authenticated user who knows or guesses a todo UUID can
@@ -160,18 +171,26 @@ password appears anywhere in this file.
   42:async def get_todo_by_id(db: AsyncSession, todo_id: uuid.UUID) -> Todo | None:
   43-    result = await db.execute(select(Todo).where(Todo.id == todo_id))
   ```
-- **Reproduction (not yet executed):** User A creates a todo. User B
-  authenticates separately and issues `GET`, `PUT` and `DELETE` against that
-  todo's id. Expected `404` for each; the code path indicates all three succeed.
-- **Proposed Fix:** Add a `user_id` parameter to `get_todo_by_id()` and filter on
-  it inside the query. Return `404` rather than `403` so the existence of another
-  user's record is not disclosed.
+- **Reproduction (executed):** Three regression tests in `tests/test_todos.py`
+  have user A create a todo and user B attempt to read, update and delete it
+  over HTTP. All three failed before the fix, returning `200`, `200` and `204`
+  where `404` was expected. The `204` is the one that matters most: user B's
+  request did not merely expose another user's record, it destroyed it.
+- **Fix applied:** `get_todo_by_id()` now takes a required `user_id` and filters
+  on it inside the query, and all three call sites pass `current_user.id`. The
+  parameter is required rather than optional so that a missed call site fails
+  loudly instead of silently reverting to the old behaviour. Non-owners receive
+  `404` rather than `403`, so the existence of another user's record is not
+  disclosed.
+- **Verification:** All three tests pass afterwards. The pre-existing tests that
+  operate on a user's own todos stayed green, so the legitimate path is not
+  blocked. Suite: 10 to 13 passing.
 
 ### SEC-03 — Global cache key leaks todos across users
 
 - **Severity:** Critical
 - **Location:** `backend/app/api/v1/todos.py:37`
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `6a9ce9f`
 - **Reason:** The cache key is the constant string `"todos:list"`, scoped neither
   by user nor by pagination parameters. The first user to call `GET /todos`
   writes their own list under this shared key; for the next 300 seconds every
@@ -185,11 +204,20 @@ password appears anywhere in this file.
   40:    cached = await redis.get(cache_key)
   72:    await redis.set(cache_key, response.model_dump_json(), ex=CACHE_TTL)
   ```
-- **Reproduction (not yet executed):** User A calls `GET /api/v1/todos`. Within
-  the TTL window, User B calls the same endpoint and is expected to receive User
-  A's items.
-- **Proposed Fix:** Scope the key to the caller and the query:
-  `f"todos:list:{current_user.id}:{page}:{size}"`.
+- **Reproduction (executed):** Reproducing this first required repairing the
+  test setup. `override_get_redis` returned a `MagicMock` whose `get()` always
+  answered `None`, and FastAPI rebuilt it on every request, so nothing written
+  by one request could ever be read by the next. Run against that mock, both new
+  tests **passed** while the Critical defect was present — a green suite that
+  proved nothing. Replacing it with a dict-backed `FakeRedis` that keeps its
+  store across requests made the defect visible at once: user B's list came back
+  as `['Belongs to A']`, and page 2 of a paginated read returned 2 items where
+  it holds 1.
+- **Fix applied:** The key is built from the caller and the query,
+  `todos:list:{user_id}:{page}:{size}`. One line of production code.
+- **Verification:** Both tests pass afterwards; suite 13 to 15. The older tests
+  stayed green even though they now run against a cache that actually functions,
+  which is closer to production than the conditions they were written under.
 
 ---
 
@@ -199,7 +227,7 @@ password appears anywhere in this file.
 
 - **Severity:** High
 - **Location:** `backend/app/api/v1/todos.py:77-85`, `:105-134`, `:137-153`
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `9957174`
 - **Reason:** No cache deletion occurs after create, update or delete. The update
   and delete endpoints inject a `redis` dependency (lines 111 and 142) that is
   never used, indicating invalidation logic was removed. A newly created todo
@@ -214,11 +242,27 @@ password appears anywhere in this file.
   111:    redis: RedisClient = Depends(get_redis),   # injected, unused
   142:    redis: RedisClient = Depends(get_redis),   # injected, unused
   ```
-- **Reproduction (not yet executed):** Call `GET /todos`, create a todo, call
-  `GET /todos` again within the TTL; the new item is expected to be absent.
-- **Proposed Fix:** Delete the caller's cache entries after every mutation. Use a
-  per-user cache version counter rather than a `KEYS` scan. Note that
-  `create_new_todo` does not currently inject `redis` and will need it.
+- **Reproduction (executed):** Five regression tests were added against the
+  stateful `FakeRedis`. Four failed before the fix: a created todo stayed absent
+  from the list, an edited title kept its old value, a deleted todo kept being
+  returned, and a second cached page kept its stale item count. The fifth guards
+  against over-broad invalidation and passed before the fix, because nothing was
+  being invalidated at all; its teeth were checked by temporarily widening the
+  pattern to `todos:list:*`, which made it fail as intended, after which the
+  correct pattern was restored.
+- **Fix applied:** `RedisClient` gained `delete_pattern`, which walks the
+  keyspace with `SCAN MATCH` through `scan_iter` rather than `KEYS`, so a large
+  keyspace is never scanned under one blocking command. Create, update and
+  delete all call a shared `invalidate_todo_list_cache` helper using the pattern
+  `todos:list:{user_id}:*` — narrow enough to spare other users' entries, wide
+  enough to cover every page and size the caller holds. `create_new_todo` also
+  had to be given the `redis` dependency, which it never had.
+- **Verification:** 5 of 5 regression tests pass; the full backend suite reports
+  20 passing. Checked against real Redis as well as the fake, which matters
+  because the fake matches keys with `fnmatch` and never exercises `scan_iter`:
+  with two cached entries for one user and one for another, a create removed
+  both of the caller's keys and left the other user's in place, and the caller's
+  next read showed the new todo.
 
 ### SEC-05 — `completed` cannot be toggled back to `false`
 
@@ -267,7 +311,7 @@ password appears anywhere in this file.
 - **Severity:** High
 - **Location:** `frontend/src/features/auth/api/auth.ts:46-56` (`useLogout`);
   `frontend/src/features/auth/hooks/useAuth.ts:23-35`
-- **Status:** `Open — static`
+- **Status:** `Fixed` in `ff7ce08`
 - **Reason:** Logout clears `localStorage` but never touches `queryClient`. The
   client is a module-level singleton (`frontend/src/lib/queryClient.ts`) that
   lives for the lifetime of the tab, configured with a five-minute `staleTime`.
@@ -280,12 +324,31 @@ password appears anywhere in this file.
   ```
   frontend/src/features/auth/hooks/useAuth.ts:29:  // Even on error, clear local tokens and redirect
   ```
-- **Reproduction (not yet executed):** Log in as User A and load the dashboard,
-  log out, then log in as User B in the same tab without reloading. User A's
-  todos and email are expected to be displayed.
-- **Proposed Fix:** Call `queryClient.clear()` in both the `onSuccess` and
-  `onError` handlers of the logout mutation, and in the response interceptor when
-  a `401` is handled.
+- **Reproduction (executed):** Demonstrated in a real browser against the full
+  stack, the frontend having no test runner. The API was first confirmed by
+  `curl` to isolate the two users correctly, so any leak visible in the UI had
+  to be client-side. User A logged in, logged out, and user B logged in on the
+  same tab: the dashboard showed A's email in the header and A's private todo in
+  the list, to B.
+- **Scope correction:** the original analysis overstated the reach. The `401`
+  interceptor uses `window.location.href`, a full page reload that destroys the
+  heap and the cache with it, so that path never leaked. Only the explicit
+  logout button did.
+- **Fix applied:** `queryClient.clear()` on both the success and the error path
+  of logout. The interceptor was left alone, since its reload already clears the
+  cache.
+- **Verification:** the same scenario re-run from a clean session showed B their
+  own email and their own todo. `tsc -b && vite build` exits 0.
+- **Known side effect:** clearing while the dashboard is still mounted leaves its
+  `useTodos` observer without data, so React Query refetches immediately and the
+  request comes back `403`, the token having already been removed. It is a failed
+  background request: it changes nothing that is displayed and it is not a leak.
+  Comparing console logs from before and after confirms it appeared only with
+  this change. Deferring the clear with `setTimeout(..., 0)` was tried and did
+  **not** suppress it, so that workaround was reverted rather than kept as
+  unexplained complexity. The root cause is that the todo query is not gated on
+  authentication, which is a separate defect and was left alone here. The cache
+  leak itself was reproduced before the fix and is absent after it.
 
 ### SEC-08 — `.env` is tracked by Git and contains a signing key
 
@@ -643,44 +706,70 @@ password appears anywhere in this file.
 
 - **Severity:** Low
 - **Location:** `backend/requirements.txt` — `passlib==1.7.4`, `bcrypt==4.3.0`
-- **Status:** `Open — suspected`
+- **Status:** `Reproduced` — observed at runtime, deliberately not fixed
 - **Reason:** `passlib` 1.7.4 reads `bcrypt.__about__.__version__`, an attribute
   removed in `bcrypt` 4.1. The combination commonly emits a version-detection
   warning at import time. This is usually harmless, but in some environments it
-  interferes with hashing. **This finding rests on dependency versions alone**;
-  it was not verified, because the container was unavailable and the packages
-  cannot be installed reliably on the local Python 3.14 interpreter.
-- **Evidence:** Version pins in `requirements.txt`. No runtime output was
-  obtained, and none is claimed.
-- **Reproduction (not yet executed):** Start the backend container and inspect
-  the startup log, or exercise `get_password_hash()` inside the container.
-- **Proposed Fix:** If the warning is confirmed, pin `bcrypt<4.1` or replace
-  `passlib` with direct use of the `bcrypt` library. Take no action unless the
-  behaviour is observed.
+  interferes with hashing.
+- **Evidence (executed):** the warning appeared in the captured log of the first
+  test run inside the container, exactly as the version pins predicted:
+  ```
+  WARNING  passlib.handlers.bcrypt: (trapped) error reading bcrypt version
+  AttributeError: module 'bcrypt' has no attribute '__about__'
+  ```
+- **Actual impact, stated precisely:** `passlib` traps this exception — the log
+  line says so — and proceeds without the version information. Hashing continues
+  to work: registration, login and every password-dependent test pass, and the
+  backend serves traffic normally. **Nothing observed indicates that password
+  hashing is broken or weakened, and no such claim is made here.** What is
+  established is a noisy warning on worker start and a dependency pairing that
+  is out of contract, which could break on a future release of either package.
+- **Status rationale:** promoted from suspected to reproduced because the
+  behaviour was observed, not because the impact turned out to be larger. It
+  remains Low severity and was deliberately left unfixed during Tier 1.
+- **Proposed Fix:** pin `bcrypt<4.1`, or drop `passlib` and use the `bcrypt`
+  library directly. Neither is urgent.
 
 ---
 
 ## Remediation order
 
-The findings below are proposed for Tier 1 remediation. The assessment requires
-at least five fixes covering at least two backend and one frontend defect; this
-selection covers seven and maps onto all five backend test scenarios listed in
-Tier 2A.
+Seven findings were proposed for Tier 1, against a requirement of at least five
+fixes covering at least two backend and one frontend defect. Five were carried
+out; SEC-05 and SEC-06 were not reached before Tier 1 closed.
 
-| Order | ID | Rationale |
-|---|---|---|
-| 1 | SEC-02 | Most severe defect; covers the cross-user authorization scenario in both Tier 2A and the Tier 2B E2E isolation test. |
-| 2 | SEC-01 | Critical, one-line change, unambiguous evidence; covers the expired-token scenario. |
-| 3 | SEC-03 | Critical; leaks data on the ordinary request path; covers the cache scenario. |
-| 4 | SEC-06 | Silent data loss; covers "updating title does not erase description". |
-| 5 | SEC-05 | Covers "updating completed from true back to false"; one-line change, demonstrable in the UI. |
-| 6 | SEC-07 | Strongest frontend finding; satisfies the frontend requirement and is what the E2E isolation test will surface. |
-| 7 | SEC-04 | Belongs with SEC-03; completes the cache invalidation scenario. |
+| Order | ID | Rationale | Outcome |
+|---|---|---|---|
+| 1 | SEC-02 | Most severe defect; covers the cross-user authorization scenario in both Tier 2A and the Tier 2B E2E isolation test. | `Fixed` (`b6089e4`) |
+| 2 | SEC-01 | Critical, one-line change, unambiguous evidence; covers the expired-token scenario. | `Fixed` (`1e6984c`) |
+| 3 | SEC-03 | Critical; leaks data on the ordinary request path; covers the cache scenario. | `Fixed` (`6a9ce9f`) |
+| 4 | SEC-06 | Silent data loss; covers "updating title does not erase description". | Not done |
+| 5 | SEC-05 | Covers "updating completed from true back to false"; one-line change, demonstrable in the UI. | Not done |
+| 6 | SEC-07 | Strongest frontend finding; satisfies the frontend requirement and is what the E2E isolation test will surface. | `Fixed` (`ff7ce08`) |
+| 7 | SEC-04 | Belongs with SEC-03; completes the cache invalidation scenario. | `Fixed` (`9957174`) |
 
-Two findings are to be reported but handled with care. SEC-08 requires
+Two findings are reported but handled with care. SEC-08 requires
 `git rm --cached` and key rotation and should be isolated in its own commit.
 SEC-12 needs a Redis denylist to fix properly, which is a wider change than
 Tier 1 warrants; it may be better recorded under trade-offs.
+
+### State at the close of Tier 1
+
+Five fixes: three backend, one frontend, one spanning the cache layer, covering
+all three Critical findings. The backend suite grew from 9 tests to 20, all
+passing. Every fix followed the same sequence — a test that failed first, then
+the change, then the test passing and the suite re-run.
+
+Eighteen findings remain open. SEC-05 and SEC-06 are the two High-severity
+logic defects that were queued and not reached; both live in
+`update_existing_todo` and are small. SEC-23 is reproduced but unfixed. The
+rest stand as read, not demonstrated.
+
+One observation was made during Tier 1 that is not a finding in this document:
+on a cold `docker compose up`, the backend exits 1 with
+`ConnectionRefusedError` against Postgres, because `depends_on` does not wait
+for the database to become ready. It was worked around by restarting the
+container, not fixed, and it belongs to the Docker work in Tier 3B.
 
 ---
 
@@ -689,3 +778,4 @@ Tier 1 warrants; it may be better recorded under trade-offs.
 | Date | Change |
 |---|---|
 | 2026-09-19 | Initial audit. 23 findings recorded from static analysis; none reproduced at runtime. |
+| 2026-09-19 | Tier 1 close. SEC-01 (`1e6984c`), SEC-02 (`b6089e4`), SEC-03 (`6a9ce9f`), SEC-07 (`ff7ce08`) and SEC-04 (`9957174`) marked `Fixed`, each with a regression test that failed before the change and passed after it. SEC-23 promoted from `Open — suspected` to `Reproduced` on observed runtime output, with its impact stated precisely and left unfixed. SEC-07 annotated with a known side effect and with a correction narrowing its original scope. Counts updated: 5 fixed, 1 reproduced, 1 suspected, 16 static. |

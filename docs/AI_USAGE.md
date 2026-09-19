@@ -91,12 +91,32 @@ no entry has been invented or embellished.
 | 7 | 2026-09-19 | Documentation | Record all 23 findings in `docs/SECURITY_AUDIT.md`, with statuses that reflect the evidence actually held. Include a methodology section explaining the static-analysis limitation. Include no secrets. | `docs/SECURITY_AUDIT.md`, 691 lines. Four status values defined; `Reproduced` deliberately left with a count of zero. | `git diff --check`; `git status --porcelain -uall`; a `grep` sweep for the signing key value, the database password, the demo password and any `eyJ`-prefixed token string — all returned zero matches. |
 | 8 | 2026-09-19 | Commit | Stage only `docs/SECURITY_AUDIT.md` and commit as `docs(security): add tier 1 audit findings`, then push and verify. | Commit `e54235b` created and pushed. | `git diff --cached --name-status`; raw message inspected with `cat -A`; `git ls-remote` confirmed the remote SHA matched local `HEAD`; `git ls-tree` confirmed the file exists in the remote tree. |
 | 9 | 2026-09-19 | Documentation | Create this disclosure document. | This file. | See the verification section of the pull request. |
+| 10 | 2026-09-19 | Tier 1 fix — SEC-01 | Fix the disabled JWT expiry check. Reproduce before fixing; smallest possible change. | A regression test signing a correctly formed but expired token for a user that really exists, then a one-line production change removing `options={"verify_exp": False}`. | Docker was started for this step, so tests could run at last. Test failed first on `assert 200 == 401`, passed after. Full suite 9 to 10 passing. Diff and changed-file list checked before staging. |
+| 11 | 2026-09-19 | Tier 1 fix — SEC-02 | Fix the todo ownership/IDOR defect. Prove cross-user read, update and delete first. | Three regression tests over HTTP; `get_todo_by_id` given a required `user_id` and all three call sites updated. | All three failed first, returning `200`, `200` and `204` — the delete really removed another user's todo. All passed after. Suite 10 to 13. `grep` confirmed no call site was left un-scoped. |
+| 12 | 2026-09-19 | Tier 1 fix — SEC-03 | Fix the shared todo-list cache key. Reproduce with real data, not by inspecting key names. | Discovered that the existing Redis mock could not express the defect: `get()` always returned `None` and the mock was rebuilt per request. Replaced it with a stateful dict-backed `FakeRedis`, then scoped the key by user, page and size. | Run against the old mock the new tests **passed while the Critical defect was present** — evidence that the mock was hiding it, recorded rather than glossed over. Against the stateful fake they failed, showing user B receiving A's todo; they passed after the fix. Suite 13 to 15. |
+| 13 | 2026-09-19 | Tier 1 fix — SEC-07 | Fix the frontend logout cache leak. Report the verification options before building any test infrastructure. | Reported that the frontend has no test runner at all, and proposed driving a real browser rather than introducing Vitest. On approval: full stack brought up, scenario driven in a browser, then `queryClient.clear()` added to both logout paths. | The API was checked by `curl` first, so the leak could be attributed to the client. Before the fix the browser showed A's email and A's private todo to B; after, B's own. `tsc -b && vite build` exits 0. **No automated frontend test exists**; this was manual browser verification. |
+| 14 | 2026-09-19 | Tier 1 fix — SEC-04 | Fix the missing cache invalidation. Cover multiple pages and confirm other users keep their cache. | `RedisClient.delete_pattern` using `SCAN MATCH` via `scan_iter` rather than blocking `KEYS`, and a shared invalidation helper called from create, update and delete. | Four of five tests failed before the fix and all five passed after; full suite 20 passing. The fifth test passes either way, so its teeth were checked by temporarily widening the pattern until it failed, then reverting. Also verified against real Redis, since the fake matches keys with `fnmatch` and never exercises `scan_iter`. |
+| 15 | 2026-09-19 | Documentation | Close Tier 1: update the audit statuses and this log to match what was actually done. | Five findings moved to `Fixed` with commit references, SEC-23 promoted to `Reproduced` on observed output, SEC-07 annotated with its side effect and a scope correction. | Statuses cross-checked against `git log` and the recorded test output. The distinction between the original static audit and what has since been demonstrated was preserved rather than flattened. |
 
 ### Notes on this log
 
-- Entries 2 through 9 were carried out in a single Claude Code session, so the
+- Entries 2 through 15 were carried out in a single Claude Code session, so the
   sequence is recorded from that session's history rather than reconstructed
   from memory.
+- Entries 10 to 14 are the five Tier 1 fixes. Each followed the same sequence:
+  a test written to reproduce the defect, the failure recorded, the change made,
+  the test passing recorded, then the full suite re-run. No fix was committed on
+  reasoning alone.
+- Two corrections are recorded rather than quietly dropped. In entry 12 the
+  assistant found that a mock in the existing test setup made a Critical defect
+  invisible, so a green suite was proving nothing. In entry 13 it tried
+  `setTimeout(..., 0)` to suppress a side effect it had introduced, measured
+  that this did not work, and reverted the attempt instead of leaving behind
+  code that looked like a fix.
+- A cold-boot failure in `docker compose` was observed during entry 13: the
+  backend exits 1 against Postgres because `depends_on` does not wait for the
+  database. It was worked around by restarting the container. **It was not
+  fixed** — it is an observation belonging to Tier 3B.
 - ChatGPT use is disclosed because it occurred, but it is not itemised in this
   table. It was not connected to the repository, produced no files in it, and no
   accurate per-prompt record of it exists. Claiming otherwise would defeat the
@@ -127,11 +147,25 @@ because they happened to be suggested.
 
 **Runtime and test evidence outrank AI reasoning.** Where the two disagree, the
 executed result wins. A finding that a model is confident about but that no test
-demonstrates remains a static finding. This is why every entry in
-`docs/SECURITY_AUDIT.md` currently carries a status of `Open — static` or
-`Open — suspected`, and why the promotion of those findings to `Reproduced` is
-scheduled for Tier 2, once the container stack is running and a failing test can
-be recorded before each fix.
+demonstrates remains a static finding.
+
+That rule decided what each finding is allowed to claim. Five were promoted to
+`Fixed` because a test failed before the change and passed after it, and one to
+`Reproduced` because its warning was observed in captured output. The other
+seventeen still say `Open — static` or `Open — suspected`, because nothing has
+been run against them. The document says which is which rather than presenting
+twenty-three equally confident conclusions.
+
+The same rule cut the other way twice. In SEC-03 a passing test was rejected as
+evidence once it turned out the mock could not express the defect. In SEC-07 a
+proposed workaround was measured, found not to work, and removed — the
+measurement outranked the reasoning that produced it.
+
+**Each commit was verified before and after.** Diffs were read before staging,
+files were staged by explicit path, raw commit messages were inspected with
+`cat -A` after the first one was malformed, and every push was confirmed by
+comparing the SHA from `git ls-remote` against local `HEAD` rather than trusting
+the push output alone.
 
 ---
 
