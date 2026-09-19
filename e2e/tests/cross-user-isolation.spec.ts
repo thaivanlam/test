@@ -62,8 +62,11 @@ test("a todo created by one user is not visible to another user's session", asyn
 
     // Confirm the todo really exists before looking for its absence
     // elsewhere; otherwise B's check below would pass for the wrong reason.
+    // exact: each row also has a selection checkbox named 'Select "<title>"',
+    // which a substring match would pick up too; the completion checkbox is
+    // the one named by the title alone.
     await expect(
-      pageA.getByRole("checkbox", { name: privateTodo })
+      pageA.getByRole("checkbox", { name: privateTodo, exact: true })
     ).toBeVisible();
     await expect(pageA.getByText("Showing 1 of 1 todos")).toBeVisible();
 
@@ -84,6 +87,8 @@ test("a todo created by one user is not visible to another user's session", asyn
 
     // The assertion the scenario exists for.
     await expect(pageB.getByText(privateTodo, { exact: true })).toBeHidden();
+    // Not exact on purpose: no checkbox of any kind — completion or
+    // selection — may mention A's todo.
     await expect(
       pageB.getByRole("checkbox", { name: privateTodo })
     ).toHaveCount(0);
@@ -93,7 +98,7 @@ test("a todo created by one user is not visible to another user's session", asyn
     // whole time B could not see it, rather than having gone missing.
     await pageA.reload();
     await expect(
-      pageA.getByRole("checkbox", { name: privateTodo })
+      pageA.getByRole("checkbox", { name: privateTodo, exact: true })
     ).toBeVisible();
   } finally {
     await userAContext.close();

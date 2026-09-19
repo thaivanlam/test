@@ -48,8 +48,10 @@ test("a new user can register, create and complete a todo, then log out", async 
   await expect(dialog).toBeHidden();
 
   // The checkbox takes its accessible name from the <label for> that holds
-  // the title, so it can be found by the title alone.
-  const checkbox = page.getByRole("checkbox", { name: todoTitle });
+  // the title, so it can be found by the title alone. exact: the row's
+  // selection checkbox is named 'Select "<title>"', which a substring match
+  // would also pick up.
+  const checkbox = page.getByRole("checkbox", { name: todoTitle, exact: true });
   const titleLabel = page.getByText(todoTitle, { exact: true });
 
   await expect(checkbox).toBeVisible();
