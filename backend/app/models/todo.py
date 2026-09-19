@@ -32,9 +32,12 @@ class Todo(Base):
         Boolean,
         default=False,
     )
+    # Indexed by migration a5ac6aec37c4. Declared here as well so the model
+    # matches the schema and autogenerate does not propose dropping it.
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id"),
         nullable=False,
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
