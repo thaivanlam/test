@@ -1,6 +1,7 @@
 import asyncio
 import os
 from collections.abc import AsyncGenerator
+from fnmatch import fnmatch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -75,6 +76,12 @@ class FakeRedis:
     async def delete(self, key: str):
         self.store.pop(key, None)
 
+    async def delete_pattern(self, pattern: str) -> int:
+        matching = [key for key in self.store if fnmatch(key, pattern)]
+        for key in matching:
+            del self.store[key]
+        return len(matching)
+
     async def exists(self, key: str) -> bool:
         return key in self.store
 
@@ -88,6 +95,12 @@ def reset_redis():
     fake_redis.store.clear()
     yield
     fake_redis.store.clear()
+
+
+@pytest.fixture
+def redis_store() -> dict[str, str]:
+    """The cache contents, for the few assertions that are about keys."""
+    return fake_redis.store
 
 
 def override_get_redis():

@@ -23,6 +23,17 @@ router = APIRouter()
 CACHE_TTL = 300  # 5 minutes
 
 
+async def invalidate_todo_list_cache(redis: RedisClient, user_id: uuid.UUID) -> None:
+    """Drop every cached list page belonging to one user.
+
+    The cache key carries page and size, so a user can hold several entries at
+    once and a mutation makes all of them stale, not just the page that was
+    read most recently. The pattern is scoped to the user so that nobody
+    else's cache is thrown away.
+    """
+    await redis.delete_pattern(f"todos:list:{user_id}:*")
+
+
 @router.get("", response_model=TodoListResponse)
 async def list_todos(
     page: int = Query(1, ge=1),
@@ -81,9 +92,11 @@ async def create_new_todo(
     todo_data: TodoCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
 ):
     """Create a new todo item."""
     todo = await create_todo(db, todo_data, current_user.id)
+    await invalidate_todo_list_cache(redis, current_user.id)
     return todo
 
 
@@ -132,6 +145,7 @@ async def update_existing_todo(
         todo.description = update_data["description"]
 
     updated_todo = await update_todo(db, todo, {})
+    await invalidate_todo_list_cache(redis, current_user.id)
 
     return updated_todo
 
@@ -152,5 +166,6 @@ async def delete_existing_todo(
         )
 
     await delete_todo(db, todo)
+    await invalidate_todo_list_cache(redis, current_user.id)
 
     return None

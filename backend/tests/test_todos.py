@@ -276,3 +276,143 @@ async def test_todo_list_cache_distinguishes_pagination(client: AsyncClient):
     assert page_2.status_code == 200
     assert len(page_2.json()["items"]) == 1
     assert page_2.json()["page"] == 2
+
+
+async def get_user_id(client: AsyncClient, token: str) -> str:
+    """Helper to resolve the authenticated user's id."""
+    response = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    return response.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_creating_todo_invalidates_cached_list(client: AsyncClient):
+    """A todo created after the list was cached must appear in the next list."""
+    token = await get_auth_token(client, "invalidate-create@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    await client.post("/api/v1/todos", json={"title": "First"}, headers=headers)
+
+    # Populate the cache.
+    first_list = await client.get("/api/v1/todos", headers=headers)
+    assert [item["title"] for item in first_list.json()["items"]] == ["First"]
+
+    await client.post("/api/v1/todos", json={"title": "Second"}, headers=headers)
+
+    second_list = await client.get("/api/v1/todos", headers=headers)
+    titles = [item["title"] for item in second_list.json()["items"]]
+    assert "Second" in titles
+    assert second_list.json()["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_updating_todo_invalidates_cached_list(client: AsyncClient):
+    """An edited title must be visible in the next list, not the cached one."""
+    token = await get_auth_token(client, "invalidate-update@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_response = await client.post(
+        "/api/v1/todos", json={"title": "Before edit"}, headers=headers
+    )
+    todo_id = create_response.json()["id"]
+
+    first_list = await client.get("/api/v1/todos", headers=headers)
+    assert [item["title"] for item in first_list.json()["items"]] == ["Before edit"]
+
+    await client.put(
+        f"/api/v1/todos/{todo_id}", json={"title": "After edit"}, headers=headers
+    )
+
+    second_list = await client.get("/api/v1/todos", headers=headers)
+    assert [item["title"] for item in second_list.json()["items"]] == ["After edit"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_todo_invalidates_cached_list(client: AsyncClient):
+    """A deleted todo must not survive in the cached list."""
+    token = await get_auth_token(client, "invalidate-delete@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_response = await client.post(
+        "/api/v1/todos", json={"title": "Doomed"}, headers=headers
+    )
+    todo_id = create_response.json()["id"]
+
+    first_list = await client.get("/api/v1/todos", headers=headers)
+    assert [item["title"] for item in first_list.json()["items"]] == ["Doomed"]
+
+    await client.delete(f"/api/v1/todos/{todo_id}", headers=headers)
+
+    second_list = await client.get("/api/v1/todos", headers=headers)
+    assert second_list.json()["items"] == []
+    assert second_list.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mutation_invalidates_every_cached_page(client: AsyncClient):
+    """Invalidation must reach pages other than the one most recently read.
+
+    The cache key carries page and size, so a mutation has to clear all of a
+    user's entries rather than a single page's.
+    """
+    token = await get_auth_token(client, "invalidate-pages@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    for index in range(3):
+        await client.post(
+            "/api/v1/todos", json={"title": f"Todo {index}"}, headers=headers
+        )
+
+    # Populate both pages.
+    page_1 = await client.get(
+        "/api/v1/todos", params={"page": 1, "size": 2}, headers=headers
+    )
+    assert len(page_1.json()["items"]) == 2
+    page_2 = await client.get(
+        "/api/v1/todos", params={"page": 2, "size": 2}, headers=headers
+    )
+    assert len(page_2.json()["items"]) == 1
+
+    await client.post("/api/v1/todos", json={"title": "Todo 3"}, headers=headers)
+
+    page_2_again = await client.get(
+        "/api/v1/todos", params={"page": 2, "size": 2}, headers=headers
+    )
+    assert len(page_2_again.json()["items"]) == 2
+    assert page_2_again.json()["total"] == 4
+
+
+@pytest.mark.asyncio
+async def test_mutation_does_not_invalidate_other_users_cache(
+    client: AsyncClient, redis_store: dict
+):
+    """One user's mutation must not evict another user's cached list.
+
+    This one guards against over-broad invalidation — a flush of the whole
+    cache would still be correct for the caller but would throw away everyone
+    else's entries. It asserts on keys because the difference is not otherwise
+    observable: a discarded cache and a valid one return the same data.
+    """
+    token_a = await get_auth_token(client, "invalidate-keep-a@example.com")
+    token_b = await get_auth_token(client, "invalidate-keep-b@example.com")
+    user_a_id = await get_user_id(client, token_a)
+
+    await client.post(
+        "/api/v1/todos",
+        json={"title": "A's todo"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    await client.get("/api/v1/todos", headers={"Authorization": f"Bearer {token_a}"})
+    assert any(key.startswith(f"todos:list:{user_a_id}:") for key in redis_store)
+
+    await client.post(
+        "/api/v1/todos",
+        json={"title": "B's todo"},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+
+    assert any(
+        key.startswith(f"todos:list:{user_a_id}:") for key in redis_store
+    ), "user B's mutation evicted user A's cached list"
