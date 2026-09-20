@@ -85,13 +85,13 @@ password appears anywhere in this file.
 |---|---|
 | Critical | 3 |
 | High | 6 |
-| Medium | 10 |
+| Medium | 11 |
 | Low | 4 |
-| **Total** | **23** |
+| **Total** | **24** |
 
 | Area | Count |
 |---|---|
-| Backend | 15 |
+| Backend | 16 |
 | Frontend | 7 |
 | Repository / secrets | 1 |
 
@@ -100,7 +100,7 @@ password appears anywhere in this file.
 | `Open — static` | 6 |
 | `Open — suspected` | 1 |
 | `Reproduced` | 4 |
-| `Fixed` | 8 |
+| `Fixed` | 9 |
 | `Fixed — no fail-first test` | 4 |
 
 ### Index
@@ -130,6 +130,7 @@ password appears anywhere in this file.
 | SEC-21 | Low | Config | SQL echo enabled by default | `Open — static` |
 | SEC-22 | Low | Frontend | Route guard checks only for token presence | `Open — suspected` |
 | SEC-23 | Low | Dependencies | `passlib` / `bcrypt` version incompatibility | `Reproduced` |
+| SEC-24 | Medium | Cache | Cache invalidated before the transaction commits; a concurrent read re-caches stale data | `Fixed` (`38b1685`) |
 
 ---
 
@@ -779,6 +780,68 @@ password appears anywhere in this file.
   because Tier 4's row selection keeps per-row state across refetches. There is
   no test that fails on an index key, so it is not marked `Fixed`.
 
+### SEC-24 — Cache invalidated before the transaction commits
+
+- **Severity:** Medium
+- **Location:** `backend/app/api/v1/todos.py`, `backend/app/api/v1/tags.py`,
+  `backend/app/services/todo_cache.py`, with `backend/app/db/session.py:20-27`
+- **Status:** `Fixed` in `38b1685`
+- **Found:** during the Tier 4 final verification, not by the original audit.
+- **Not a Tier 4 regression.** The pattern dates from the SEC-04 fix
+  (`9957174`, Tier 1): every mutation deleted the user's cache keys and then
+  returned, and `get_db` committed afterwards. Tier 4 added more mutations that
+  followed it. `session.py` was not changed by any Tier 4 commit.
+- **Reason:** the invalidation ran while the transaction was still open. A list
+  request already in flight could read the database before that commit, finish
+  after the delete, and write its own — now stale — answer into the cache,
+  where nothing would remove it until its five-minute TTL expired. The window
+  is small but the consequence is not: the user sees a list without the change
+  they just made, for up to five minutes.
+- **Evidence (reproduced at runtime):** a Playwright run failed with the list
+  showing "No todos yet" for a user who had just created one. For that user:
+
+  ```
+  Postgres: 1 todo ("Tagged todo")
+  Redis:    todos:list:<user>:<hash> = {"items":[],"total":0,...}   TTL 188s
+  ```
+
+  Across 130 Tier 4 test executions that day, 4 failed this way — about 3%, in
+  two different tests, each time with a stale list.
+- **Fix applied (`38b1685`):** the cache key now carries a per-user generation,
+  `todos:list:{user_id}:{generation}:{hash}`, read from `todos:gen:{user_id}`.
+  A mutation **commits first and then increments** that counter, and the read
+  path takes the generation *before* it queries the database. So a read holding
+  a pre-commit snapshot can only write it under the generation it already read,
+  which the bump has left behind; and a read that sees the new generation saw
+  it after the bump, hence after the commit, so its data is current. Nothing is
+  deleted: the entries left behind are simply unaddressable and expire on their
+  own TTL.
+  - Bumping *inside* the transaction — the obvious alternative — does not work.
+    A read that sees the new generation before the commit lands would cache its
+    stale snapshot under the generation that stays current afterwards, which is
+    this same defect one generation along.
+  - What remains: between the commit and the increment, a read still sees the
+    old generation and can be served an old entry. That window is one Redis
+    round trip, and cannot be closed without a transaction spanning Postgres
+    and Redis. It replaces a window of 300 seconds.
+- **Regression tests:** `backend/tests/test_todo_cache.py`, 7 tests. They play
+  the race out step by step (cache a page, mutate, then write the stale page
+  back under the generation the read had held, and require that the next read
+  does not receive it); they check that all eight mutations move the generation
+  and that a refused mutation does not; and one asserts the ordering itself, by
+  observing from a second connection that the row is already committed at the
+  moment the counter is bumped. Run against the code before the fix, all 7
+  fail — the ordering test on its assertion, the others because the pre-fix key
+  has no generation segment at all. With the fix in place and only the commit
+  and bump swapped, the ordering test is the one that fails, and the other six
+  still pass: it is the only test that distinguishes the two orderings.
+- **Verification:** backend suite 125 passing. The Tier 4 Playwright spec,
+  which failed intermittently before, passed 60 of 60 under `--repeat-each=6`,
+  and the full suite passed 13 of 13. On the running stack, a first list
+  request cached under generation 0, a create moved the counter to 1, and the
+  next request returned the new todo and cached it under generation 1 while the
+  generation-0 entry remained in Redis, unread.
+
 ---
 
 ## Low
@@ -988,6 +1051,19 @@ unchanged: `.env` is still tracked by Git.
 Tier 4 itself — tags, filtering, pagination and bulk status — is covered by
 the suites in "Test evidence" below and in `docs/TEST_PLAN.md` §5.
 
+### Final verification, and SEC-24
+
+The final audit of the nine Tier 4 commits found one defect, recorded above
+as SEC-24: the cache was invalidated before the transaction committed, so a
+concurrent read could put stale data back. It was reproduced at runtime,
+fixed in `38b1685`, and the fix carries its own regression tests. It was not
+introduced by Tier 4 — the ordering came from the SEC-04 fix in Tier 1 — and
+SEC-04's own result is unchanged: invalidation does happen on every
+mutation, and the counts it recorded still stand.
+
+Counts including SEC-24: 9 fixed, 4 fixed without a fail-first test, 4
+reproduced, 1 suspected, 6 static, 24 in total.
+
 ---
 
 ## Test evidence
@@ -1079,9 +1155,9 @@ details, commands and per-file counts are in `docs/TEST_PLAN.md` §5.
 
 | Suite | Result |
 |---|---|
-| Backend pytest | `118 passed` |
+| Backend pytest | `125 passed` (118 at `fdbb12f`, plus 7 with the SEC-24 fix) |
 | Frontend Vitest (new in Tier 4) | `31 passed` |
-| Playwright | `13 passed` — the three Tier 2B tests and ten Tier 4 tests; the Tier 4 spec also passed 30 of 30 under `--repeat-each=3` |
+| Playwright | `13 passed` — the three Tier 2B tests and ten Tier 4 tests. Before the SEC-24 fix the Tier 4 spec was intermittent (4 failures in 130 executions); after it, 60 of 60 under `--repeat-each=6` and 13 of 13 for the full suite |
 
 The two Tier 2A scenarios recorded above as not covered — `completed` back to
 `false`, and `description` kept on a partial update — are now covered by
@@ -1102,3 +1178,4 @@ left in the database.
 | 2026-09-19 | Tier 3B checkpoint. Infrastructure changes recorded: healthchecks and readiness-gated startup (`8517b7d`), `.dockerignore` (`7aea7f2`), nginx frontend (`63238f5`), Redis password with loopback binding and `JWT_SECRET` read from the environment (`ae29359`). The Tier 1 cold-boot observation is marked resolved. SEC-08 annotated as partially improved but **not fixed**, with its now-outdated reference to a hardcoded key in `docker-compose.yml` corrected; status unchanged at `Open — static`. No finding changed status. |
 | 2026-09-19 | Tier 3 close. Section "State after Tier 3" added, recording 3A (`a38f1bc`), 3B (`8517b7d`, `7aea7f2`, `63238f5`, `ae29359`) and 3C (`7716d12`, `3731351`; index `ix_todos_user_id` on `todos (user_id)`). SEC-13 annotated: its reference to a composite index planned for Tier 3C was outdated, since a single-column index was chosen; still **not fixed** and `Open — static`. SEC-08 still `Open — static`. No finding changed status. |
 | 2026-09-19 | Tier 4. New status `Fixed — no fail-first test` defined, for findings corrected and checked afterwards but with no committed test recorded failing on the unfixed code. SEC-05 (`2e63ab5`), SEC-06 (`f21ec44`) and SEC-13 (`de419ef`) marked `Fixed`, each on a regression test run against the pre-fix commit and recorded failing. SEC-14 (`de419ef`), SEC-16, SEC-17 and SEC-19 (`612c9be`) marked `Fixed — no fail-first test`, each section stating what evidence exists. SEC-19 was fixed as part of the frontend work, not as a targeted fix. Tier 4 test evidence added. Counts updated: 8 fixed, 4 fixed without a fail-first test, 4 reproduced, 1 suspected, 6 static. SEC-08 unchanged at `Open — static`. |
+| 2026-09-20 | Tier 4 final verification. SEC-24 added and marked `Fixed` (`38b1685`): the todo list cache was invalidated before the transaction committed, and a concurrent read could write a stale list back, which was reproduced at runtime (Postgres holding one todo while Redis held an empty list with 188s to live). The mechanism came from the SEC-04 fix in Tier 1, not from Tier 4; SEC-04's recorded result is unchanged. Fixed with a per-user cache generation bumped after the commit, covered by seven regression tests that all fail against the pre-fix code. Counts updated: 9 fixed, 4 fixed without a fail-first test, 4 reproduced, 1 suspected, 6 static, 24 in total. |

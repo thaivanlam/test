@@ -3,7 +3,7 @@
 **Assessment:** Fabbi Developer Assessment — Full-Stack Engineering & Quality Assurance
 **Branch:** `assessment/thai-van-lam`
 **Author:** Thái Văn Lâm
-**Last updated:** 2026-09-19
+**Last updated:** 2026-09-20
 
 The assessment brief requires that any use of AI coding assistants be
 disclosed, together with prompt logs or configuration. This document is that
@@ -40,9 +40,11 @@ produced by an actually executed command, with its output recorded:
 - benchmark and query timing figures.
 
 Where such evidence does not exist yet, the documentation says so explicitly
-rather than implying a result. `docs/SECURITY_AUDIT.md` follows this rule: all
-23 findings are recorded as static analysis, and none is marked as reproduced,
-because the container stack was unavailable when the audit was performed.
+rather than implying a result. `docs/SECURITY_AUDIT.md` followed this rule from
+the start: when it was first written every one of its findings was recorded as
+static analysis and none as reproduced, because the container stack was
+unavailable at the time. Statuses have moved since, each on recorded output;
+the document's change log says when and on what evidence.
 
 ---
 
@@ -124,6 +126,8 @@ no entry has been invented or embellished.
 | 40 | 2026-09-19 | Tier 4 — bulk status | `PATCH /todos/bulk-status`, all or nothing, in one transaction. | One `SELECT … FOR UPDATE` to check ownership, one `UPDATE`, a row-count check that rolls back on mismatch; 22 tests. The assistant chose a limit of 100 ids and said so. Commit `86ac5a7`. | 118 passing. With the ownership check removed, the row-count rollback alone still kept the failure cases intact; with both removed, five tests failed. The Postgres path, including `FOR UPDATE`, was run once in a rolled-back transaction. |
 | 41 | 2026-09-19 | Tier 4 — frontend | Filter bar, pagination, tag management, attach/detach, bulk selection; query keys containing every filter; React Hook Form and Zod for tags; minimal Vitest. | Commit `612c9be`. The optimistic toggle now covers every cached list and rolls back on error (SEC-16); the list is keyed by id (SEC-19). Two existing E2E locators were made exact because each row now has a selection checkbox. | Vitest 31 passing, and one test failed when `date_to` was removed from the key on purpose. Build, type check and lint clean. Images rebuilt, with the route and the bundle checked, before running E2E: 3 passing. A temporary Playwright script, never committed, made 31 checks against the stack; its first runs failed six times, every time because of the script (a request served from cache, and substring-matching locators), not the app. |
 | 42 | 2026-09-19 | Tier 4 — E2E and documentation | Turn the important Tier 4 checks into committed Playwright tests and bring the test plan, the audit and this log up to date. | `e2e/tests/tier4-todos.spec.ts` with ten tests; `docs/TEST_PLAN.md` §5; audit statuses for seven findings, with a new status `Fixed — no fail-first test` for fixes without a recorded failing run. | Tier 4 spec 30/30 under `--repeat-each=3`; full Playwright suite 13 passing; backend 118; Vitest 31. The SEC-16 test failed against a dev server built with the rollback removed and passed with it restored. The regression tests for SEC-05, SEC-06 and SEC-13 were run against the commits before each fix and failed; the N+1 in SEC-14 was measured before and after. Audit statuses checked by script across the index, every section and the summary counts. |
+| 43 | 2026-09-20 | Final audit | Audit all nine unpushed Tier 4 commits before allowing a push: git state, secrets, migrations, contract, docs, and every suite. Do not push. | The branch checked out clean on every count except one: the full Playwright suite failed a test that had passed the day before. Rather than rerun until green, the assistant traced it to the application — the todo list cache was invalidated before the transaction committed — and reported it with evidence instead of committing a workaround. | Redis and Postgres were read side by side for the failing user: one todo in the database, an empty list in the cache with 188 seconds left. Flake rate counted over 130 test executions: 4 failures. A first hypothesis-driven reproduction attempt failed (0 of 15) and was reported as not reproducing rather than presented as proof. |
+| 44 | 2026-09-20 | Fix — SEC-24 | Fix the race with a per-user cache generation, add regression tests, re-run everything, update the documentation. | Cache keys gained a generation segment; mutations now commit and then bump the counter. The assistant flagged that the ordering sketched in the request — bump inside the transaction — would leave the same defect one generation along, and implemented commit-then-bump instead, with the reasoning written into the code. Commits `38b1685` and the documentation commit that follows it. | Seven new tests, all failing against the pre-fix code. The ordering test was checked for teeth by swapping the commit and the bump: it fails and the other six still pass, so it is the only one that distinguishes the two orderings. Backend 125. On the real stack, generation 0 → create → generation 1, with the old entry left unread. Playwright: 10/10, 60/60 under `--repeat-each=6`, full suite 13/13, against a rebuilt image. |
 
 ### Notes on this log
 

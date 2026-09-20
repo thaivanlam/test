@@ -139,12 +139,13 @@ superseded, not corrected, by §5.2.
 (schema), `8ce1a27` (tag CRUD), `39998fc` (attach/detach), `de419ef`
 (filtering, pagination, ordering, tags in responses), `86ac5a7` (bulk status),
 `612c9be` (frontend).
-**Suites executed at:** `612c9be`, plus the E2E spec added with this section.
-**Date:** 2026-09-19.
+**Suites executed at:** `612c9be`, plus the E2E spec added with this section,
+then re-run at `38b1685` after the SEC-24 cache fix (see §5.6).
+**Date:** 2026-09-19, re-run 2026-09-20.
 
 ### 5.1 Backend — pytest
 
-`118 passed`, run with the current source mounted into the backend container:
+`125 passed`, run with the current source mounted into the backend container:
 
 ```bash
 MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \
@@ -159,6 +160,7 @@ MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \
 | `test_todo_bulk_status.py` | 22 | `PATCH /todos/bulk-status` in both directions; duplicate ids applied once; ten malformed payloads `422`; a missing id or another user's id `404` with **no** row changed (state read from the database, including `updated_at`); the caller's cached lists cleared, other users' kept, nothing cleared on failure |
 | `test_todos.py` | 18 | Tier 1–3 tests, plus three added for SEC-05 and SEC-06: `test_completed_can_be_set_back_to_false`, `test_partial_update_keeps_description`, `test_description_can_be_cleared_explicitly` |
 | `test_auth.py` | 5 | Unchanged since Tier 1 |
+| `test_todo_cache.py` | 7 | Added with the SEC-24 fix (§5.6): cache generations, the invalidation race played out step by step, every mutation moving the generation, and the commit-before-bump ordering |
 
 The suite runs on SQLite and the in-memory `FakeRedis`. Since `8ce1a27` the
 SQLite connection enables `PRAGMA foreign_keys=ON`, without which the cascade
@@ -214,7 +216,9 @@ data.
 
 How they were checked:
 
-- The Tier 4 spec passed 30 of 30 runs under `--repeat-each=3`.
+- The Tier 4 spec passed 30 of 30 runs under `--repeat-each=3` when it was
+  written. It was **not** dependable until the SEC-24 fix: see §5.6 for what
+  that hid, and for the final numbers.
 - The SEC-16 test was run against a Vite dev server built from source with the
   rollback removed, and failed with `Expected: not checked, Received: checked`.
   With the source restored, the same test on the same server passed.
@@ -242,3 +246,34 @@ the repository.
 - There are no frontend component tests; UI behaviour is covered only through
   Playwright.
 - The E2E tests leave their users, todos and tags in the database.
+
+### 5.6 The cache race found by the final audit (SEC-24)
+
+Re-running the suites during the final audit of the Tier 4 commits produced a
+failure that had not appeared before: a todo created through the API did not
+show up in the list. It was not a test defect. For the user in that run,
+Postgres held one todo while Redis held an empty list for the same user with
+188 seconds left to live: a read that started before the mutation had written
+its stale answer into the cache after the mutation deleted it.
+
+Frequency before the fix, counted rather than estimated: **4 failures in 130
+Tier 4 test executions** (one full-suite run of 13, and two repeated runs of
+60), in two different tests.
+
+The cause and the fix are recorded as SEC-24 in `docs/SECURITY_AUDIT.md`. The
+mechanism dates from Tier 1, not Tier 4.
+
+Results after the fix (`38b1685`), all re-run on a rebuilt backend image:
+
+| Suite | Result |
+|---|---|
+| Backend pytest | `125 passed` (118 before, plus 7 new cache tests) |
+| Vitest | `31 passed` |
+| Frontend build / ESLint | build passes; ESLint exits 0 |
+| Tier 4 spec | `10 passed` |
+| Tier 4 spec, `--repeat-each=6` | `60 passed` |
+| Full Playwright suite | `13 passed` |
+
+The seven new tests are deterministic: they write the stale entry themselves
+rather than trying to win a race, so none of them depends on timing and none
+uses a sleep.

@@ -77,6 +77,12 @@ Test backend dùng SQLite (sqlite+aiosqlite) và `FakeRedis` (dict có trạng t
 giữ dữ liệu giữa các request) trong tests/conftest.py — không đụng Redis thật.
 SQLite bật `PRAGMA foreign_keys=ON` (conftest) để test được ON DELETE CASCADE.
 
+Cache todo list dùng **generation theo user**: key là
+`todos:list:{user_id}:{generation}:{hash}`, generation đọc từ
+`todos:gen:{user_id}`. Mutation phải **commit TRƯỚC rồi mới INCR** generation
+(`commit_and_bump_todo_list_generation`). Đảo thứ tự lại là tái tạo SEC-24:
+một GET đang bay dở sẽ ghi dữ liệu cũ vào đúng generation còn hiệu lực.
+
 ## Quy ước commit
 
 Conventional Commits, type thuộc: feat, fix, docs, style, refactor, perf,
