@@ -16,7 +16,7 @@ from app.services.tag_service import (
     get_tags,
     update_tag,
 )
-from app.services.todo_cache import invalidate_todo_list_cache
+from app.services.todo_cache import commit_and_bump_todo_list_generation
 
 router = APIRouter()
 
@@ -76,7 +76,7 @@ async def update_existing_tag(
     # while an explicit "color": null clears the color.
     updated = await update_tag(db, tag, tag_data.model_dump(exclude_unset=True))
     # Cached todo lists embed each tag's name and color.
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
     return updated
 
 
@@ -91,5 +91,5 @@ async def delete_existing_tag(
     tag = await get_own_tag_or_404(db, tag_id, current_user.id)
     await delete_tag(db, tag)
     # Cached todo lists still show the tag on the todos it was attached to.
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
     return None

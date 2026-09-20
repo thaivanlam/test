@@ -89,6 +89,11 @@ class FakeRedis:
     async def delete(self, key: str):
         self.store.pop(key, None)
 
+    async def incr(self, key: str) -> int:
+        value = int(self.store.get(key, 0)) + 1
+        self.store[key] = str(value)
+        return value
+
     async def delete_pattern(self, pattern: str) -> int:
         matching = [key for key in self.store if fnmatch(key, pattern)]
         for key in matching:

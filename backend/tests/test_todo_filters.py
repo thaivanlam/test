@@ -81,8 +81,20 @@ async def titles(client: AsyncClient, headers: dict, **params) -> list[str]:
     return [item["title"] for item in response.json()["items"]]
 
 
+def current_generation(store: dict[str, str], user_id: str) -> str:
+    """The generation the API would read now; absent means generation 0."""
+    return store.get(f"todos:gen:{user_id}", "0")
+
+
 def list_keys(store: dict[str, str], user_id: str) -> set[str]:
-    return {key for key in store if key.startswith(f"todos:list:{user_id}:")}
+    """Cached pages the user can still be served: current generation only.
+
+    Mutations bump the generation instead of deleting keys, so older entries
+    may linger in the store while being unreachable.
+    """
+    generation = current_generation(store, user_id)
+    prefix = f"todos:list:{user_id}:{generation}:"
+    return {key for key in store if key.startswith(prefix)}
 
 
 async def user_id_of(client: AsyncClient, headers: dict) -> str:

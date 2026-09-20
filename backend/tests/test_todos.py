@@ -502,7 +502,16 @@ async def test_mutation_does_not_invalidate_other_users_cache(
         headers={"Authorization": f"Bearer {token_a}"},
     )
     await client.get("/api/v1/todos", headers={"Authorization": f"Bearer {token_a}"})
-    assert any(key.startswith(f"todos:list:{user_a_id}:") for key in redis_store)
+
+    # A cached page A can still be served: one under A's current generation.
+    # (A mutation moves the user to a new generation rather than deleting
+    # keys, so counting keys by user alone would also count unreachable ones.)
+    def live_keys_for_a() -> list[str]:
+        generation = redis_store.get(f"todos:gen:{user_a_id}", "0")
+        prefix = f"todos:list:{user_a_id}:{generation}:"
+        return [key for key in redis_store if key.startswith(prefix)]
+
+    assert live_keys_for_a()
 
     await client.post(
         "/api/v1/todos",
@@ -510,6 +519,4 @@ async def test_mutation_does_not_invalidate_other_users_cache(
         headers={"Authorization": f"Bearer {token_b}"},
     )
 
-    assert any(
-        key.startswith(f"todos:list:{user_a_id}:") for key in redis_store
-    ), "user B's mutation evicted user A's cached list"
+    assert live_keys_for_a(), "user B's mutation evicted user A's cached list"

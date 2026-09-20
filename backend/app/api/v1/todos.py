@@ -18,7 +18,11 @@ from app.schemas.todo import (
     TodoUpdate,
 )
 from app.services.tag_service import attach_tag, detach_tag, get_tag_by_id
-from app.services.todo_cache import invalidate_todo_list_cache, todo_list_cache_key
+from app.services.todo_cache import (
+    commit_and_bump_todo_list_generation,
+    current_todo_list_generation,
+    todo_list_cache_key,
+)
 from app.services.todo_service import (
     TodoFilters,
     TodoStatus,
@@ -93,7 +97,12 @@ async def list_todos(
         date_from=date_from,
         date_to=date_to,
     )
-    cache_key = todo_list_cache_key(current_user.id, filters, page, effective_page_size)
+    # The generation is read before the database is queried, so anything
+    # cached under it describes a database state no older than this moment.
+    generation = await current_todo_list_generation(redis, current_user.id)
+    cache_key = todo_list_cache_key(
+        current_user.id, generation, filters, page, effective_page_size
+    )
 
     cached = await redis.get(cache_key)
     if cached:
@@ -139,7 +148,7 @@ async def create_new_todo(
 ):
     """Create a new todo item."""
     todo = await create_todo(db, todo_data, current_user.id)
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
     return todo
 
 
@@ -164,7 +173,7 @@ async def bulk_update_status(
             detail="Todo not found",
         )
 
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
     return TodoBulkStatusResponse(updated=len(todo_ids))
 
 
@@ -219,7 +228,7 @@ async def update_existing_todo(
         todo.description = update_data["description"]
 
     updated_todo = await update_todo(db, todo, {})
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
 
     return updated_todo
 
@@ -240,7 +249,7 @@ async def delete_existing_todo(
         )
 
     await delete_todo(db, todo)
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
 
     return None
 
@@ -281,7 +290,7 @@ async def attach_tag_to_todo(
     """Attach one of the user's tags to one of their todos."""
     await ensure_own_todo_and_tag(db, todo_id, body.tag_id, current_user.id)
     await attach_tag(db, todo_id, body.tag_id)
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
     return None
 
 
@@ -296,5 +305,5 @@ async def detach_tag_from_todo(
     """Detach a tag from a todo. Both must belong to the user."""
     await ensure_own_todo_and_tag(db, todo_id, tag_id, current_user.id)
     await detach_tag(db, todo_id, tag_id)
-    await invalidate_todo_list_cache(redis, current_user.id)
+    await commit_and_bump_todo_list_generation(db, redis, current_user.id)
     return None

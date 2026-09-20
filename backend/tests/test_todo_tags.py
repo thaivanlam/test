@@ -208,8 +208,21 @@ async def test_attach_and_detach_require_authentication(client: AsyncClient):
     assert detach_response.status_code == 403
 
 
+def current_generation(store: dict[str, str], user_id: str) -> str:
+    """The generation the API would read now; absent means generation 0."""
+    return store.get(f"todos:gen:{user_id}", "0")
+
+
 def cached_list_keys(store: dict[str, str], user_id: str) -> list[str]:
-    return [key for key in store if key.startswith(f"todos:list:{user_id}:")]
+    """Cached pages the user can still be served.
+
+    A mutation moves the user to a new generation rather than deleting keys,
+    so entries from earlier generations may remain in the store; they can
+    never be read again and are not counted here.
+    """
+    generation = current_generation(store, user_id)
+    prefix = f"todos:list:{user_id}:{generation}:"
+    return [key for key in store if key.startswith(prefix)]
 
 
 async def user_id_of(client: AsyncClient, headers: dict) -> str:
