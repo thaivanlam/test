@@ -1,0 +1,15 @@
+# Keeps local artifacts out of the build context.
+
+# Installed inside the image. A host copy must never be sent:
+# `COPY . .` would overwrite the container's install with modules built for
+# the host platform.
+node_modules/
+
+# Build output and caches; the image produces its own.
+dist/
+.vite/
+coverage/
+*.log
+
+# .env is deliberately NOT ignored. The build reads VITE_API_URL from it and
+# inlines it into the bundle. It holds only the public API URL.

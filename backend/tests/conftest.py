@@ -1,10 +1,11 @@
 import asyncio
 import os
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock
+from fnmatch import fnmatch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Use SQLite for tests before app modules initialize their default engine.
@@ -18,6 +19,18 @@ from app.db.session import get_db
 from app.main import app
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+
+
+# SQLite ignores foreign keys unless each connection turns them on. Postgres
+# always enforces them, so without this the tests could not observe ON DELETE
+# CASCADE, and would accept rows that point at nothing.
+@event.listens_for(test_engine.sync_engine, "connect")
+def enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 test_session_maker = async_sessionmaker(
     test_engine,
     class_=AsyncSession,
@@ -51,12 +64,65 @@ async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+class FakeRedis:
+    """In-memory stand-in for RedisClient, backed by a dict.
+
+    The previous MagicMock returned None from get() and was rebuilt on every
+    request, so a value written by one request was never visible to the next.
+    That made cache behaviour — including cross-user cache leaks — impossible
+    to observe from a test. This fake keeps its store across requests, which is
+    the property under test.
+
+    Expiry is ignored: these tests assert on what is cached under which key,
+    not on when it lapses.
+    """
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None):
+        self.store[key] = value
+
+    async def delete(self, key: str):
+        self.store.pop(key, None)
+
+    async def incr(self, key: str) -> int:
+        value = int(self.store.get(key, 0)) + 1
+        self.store[key] = str(value)
+        return value
+
+    async def delete_pattern(self, pattern: str) -> int:
+        matching = [key for key in self.store if fnmatch(key, pattern)]
+        for key in matching:
+            del self.store[key]
+        return len(matching)
+
+    async def exists(self, key: str) -> bool:
+        return key in self.store
+
+
+fake_redis = FakeRedis()
+
+
+@pytest.fixture(autouse=True)
+def reset_redis():
+    """Keep cache state from leaking between tests."""
+    fake_redis.store.clear()
+    yield
+    fake_redis.store.clear()
+
+
+@pytest.fixture
+def redis_store() -> dict[str, str]:
+    """The cache contents, for the few assertions that are about keys."""
+    return fake_redis.store
+
+
 def override_get_redis():
-    mock_redis = MagicMock()
-    mock_redis.get = AsyncMock(return_value=None)
-    mock_redis.set = AsyncMock()
-    mock_redis.delete = AsyncMock()
-    return mock_redis
+    return fake_redis
 
 
 app.dependency_overrides[get_db] = override_get_db
